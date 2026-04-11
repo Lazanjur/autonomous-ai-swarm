@@ -1,0 +1,16 @@
+.git
+.github
+.next
+node_modules
+apps/web/.next
+apps/web/node_modules
+apps/api/.venv
+apps/api/__pycache__
+apps/api/app/__pycache__
+apps/api/tests/__pycache__
+*.pyc
+.env
+.env.production
+var
+postgres-data
+minio-data

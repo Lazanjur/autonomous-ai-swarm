@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-sand text-ink antialiased;
+  background-image:
+    radial-gradient(circle at top left, rgba(178, 132, 81, 0.16), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(15, 58, 50, 0.12), transparent 22%),
+    linear-gradient(180deg, #f8f5ee 0%, #ece4d6 48%, #f7f3ec 100%);
+}
+
+* {
+  border-color: rgba(17, 19, 24, 0.12);
+}
+
+.panel {
+  @apply rounded-[28px] border border-black/10 bg-white/70 backdrop-blur-xl shadow-soft;
+}
+
+.text-balance {
+  text-wrap: balance;
+}
