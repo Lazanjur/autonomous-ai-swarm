@@ -90,16 +90,6 @@ function sortProjects(projects: ProjectSummary[]) {
   });
 }
 
-function getWorkspaceInitials(name: string | null | undefined) {
-  const normalized = (name ?? "Workspace")
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join("");
-  return normalized || "WS";
-}
-
 type TaskRailDisplayItem = {
   thread: Thread;
   highlight: string | null;
@@ -438,8 +428,6 @@ export function AppSidebar({
     selectedProjectId,
     currentThreadId ?? firstVisibleThreadId
   );
-  const workspaceInitials = getWorkspaceInitials(activeWorkspace?.workspace_name);
-
   async function signOut() {
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/signin");
@@ -528,7 +516,7 @@ export function AppSidebar({
         key={thread.id}
         href={taskRailHref(activeWorkspaceId, thread.project_id ?? null, thread.id)}
         className={cn(
-          "block rounded-[24px] border px-4 py-3 transition",
+          "block rounded-[18px] border px-3.5 py-3 transition",
           active
             ? "border-transparent bg-ink text-white"
             : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
@@ -568,7 +556,7 @@ export function AppSidebar({
         {item.matched_by.length > 0 && (
           <div
             className={cn(
-              "mt-3 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.16em]",
+              "mt-2.5 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.16em]",
               active ? "text-white/60" : "text-black/[0.42]"
             )}
           >
@@ -587,7 +575,7 @@ export function AppSidebar({
         )}
         <div
           className={cn(
-            "mt-3 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em]",
+            "mt-2.5 flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.16em]",
             active ? "text-white/55" : "text-black/[0.4]"
           )}
         >
@@ -619,7 +607,7 @@ export function AppSidebar({
           key={`project-search-${result.project.id}`}
           href={taskRailHref(activeWorkspaceId, result.project.id, projectLeadThreadIds.get(result.project.id) ?? null)}
           className={cn(
-            "block rounded-[24px] border px-4 py-3 transition",
+            "block rounded-[18px] border px-3.5 py-3 transition",
             active
               ? "border-transparent bg-ink text-white"
               : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
@@ -642,7 +630,7 @@ export function AppSidebar({
           {result.matched_by.length > 0 && (
             <div
               className={cn(
-                "mt-3 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.16em]",
+                "mt-2.5 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.16em]",
                 active ? "text-white/60" : "text-black/[0.42]"
               )}
             >
@@ -667,7 +655,7 @@ export function AppSidebar({
           key={`document-search-${result.document.id}`}
           href={knowledgeSearchHref(activeWorkspaceId, searchQuery, result.document.id)}
           className={cn(
-            "block rounded-[24px] border px-4 py-3 transition",
+            "block rounded-[18px] border px-3.5 py-3 transition",
             active
               ? "border-transparent bg-ink text-white"
               : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
@@ -689,7 +677,7 @@ export function AppSidebar({
           </p>
           <div
             className={cn(
-              "mt-3 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em]",
+              "mt-2.5 flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.16em]",
               active ? "text-white/55" : "text-black/[0.4]"
             )}
           >
@@ -707,7 +695,7 @@ export function AppSidebar({
           key={`artifact-search-${result.artifact.id}`}
           href={artifactSearchHref(activeWorkspaceId, searchQuery, result.artifact.id)}
           className={cn(
-            "block rounded-[24px] border px-4 py-3 transition",
+            "block rounded-[18px] border px-3.5 py-3 transition",
             active
               ? "border-transparent bg-ink text-white"
               : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
@@ -729,7 +717,7 @@ export function AppSidebar({
           </p>
           <div
             className={cn(
-              "mt-3 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em]",
+              "mt-2.5 flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.16em]",
               active ? "text-white/55" : "text-black/[0.4]"
             )}
           >
@@ -746,28 +734,16 @@ export function AppSidebar({
   if (compactSidebar) {
     return (
       <aside className="shell-sidebar flex h-full min-h-0 flex-col gap-3 p-2.5">
-        <div className="surface-card flex items-center justify-center p-2.5">
+        <div className="flex items-center justify-center px-1">
           <button
             type="button"
             onClick={() => setSidebarCollapsed(false)}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-white/92 text-black/[0.72] transition hover:bg-sand/45"
             aria-label="Expand left rail"
             title="Expand left rail"
           >
             <ChevronRight className="h-4 w-4" />
           </button>
-        </div>
-
-        <div className="surface-card flex flex-col items-center gap-3 p-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-black text-sm font-medium text-white">
-            {workspaceInitials}
-          </div>
-          <div className="text-center">
-            <p className="surface-label">Focus</p>
-            <p className="mt-1 text-xs font-medium text-black/[0.72]">
-              {selectedProject ? selectedProject.name : "All projects"}
-            </p>
-          </div>
         </div>
 
         <div className="surface-card flex flex-col items-center gap-2 p-2.5">
@@ -860,14 +836,19 @@ export function AppSidebar({
 
   return (
     <aside className="shell-sidebar flex h-full min-h-0 flex-col gap-3 p-3">
-      <div className="surface-card p-4">
+      <div className="surface-card space-y-3 p-3.5">
         <div className="flex items-center justify-between gap-3">
-          <p className="surface-label">Workspace</p>
+          <div className="min-w-0">
+            <p className="surface-label">Navigation</p>
+            <p className="truncate text-sm text-black/[0.54]">
+              {activeWorkspace?.workspace_name ?? "Workspace"}
+            </p>
+          </div>
           {isDesktopSidebar ? (
             <button
               type="button"
               onClick={() => setSidebarCollapsed(true)}
-              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
               aria-label="Collapse left rail"
               title="Collapse left rail"
             >
@@ -875,42 +856,43 @@ export function AppSidebar({
             </button>
           ) : null}
         </div>
-        <div className="mt-3">
-          <h2 className="font-display text-[1.65rem] leading-tight">
-            {activeWorkspace?.workspace_name ?? "Workspace"}
-          </h2>
-          <div className="mt-3 inline-flex rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-black/[0.62]">
-            {activeWorkspace?.role ?? session.user.role}
+
+        <Link
+          href={newTaskHref}
+          className="flex items-center gap-3 rounded-[18px] bg-ink px-3.5 py-3 text-sm text-white transition hover:bg-ink/90"
+        >
+          <MessageSquarePlus className="h-4 w-4" />
+          {selectedProject ? `New Task in ${selectedProject.name}` : "New Task"}
+        </Link>
+
+        <div className="rounded-[18px] border border-black/10 bg-white px-3.5 py-3">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
+            <Search className="h-3.5 w-3.5" />
+            Search
           </div>
+          <input
+            ref={searchInputRef}
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={
+              selectedProject
+                ? `Search ${selectedProject.name}`
+                : "Search tasks, docs, artifacts"
+            }
+            className="mt-2.5 w-full bg-transparent text-sm leading-6 outline-none placeholder:text-black/[0.35]"
+          />
         </div>
-        <p className="mt-3 text-base leading-7 text-black/[0.62]">
-          New tasks, search, projects, and history stay in this rail.
-        </p>
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-          <div className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm text-black/[0.68]">
-            <div className="font-medium">{session.user.full_name}</div>
-            <div className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">
-              {session.user.email}
-            </div>
-          </div>
-          <div className="rounded-2xl border border-black/10 bg-sand/35 px-4 py-3 text-sm text-black/[0.68]">
-            <div className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">Focus</div>
-            <div className="mt-2 font-medium">{selectedProject ? selectedProject.name : "All projects"}</div>
-            <div className="mt-1 text-xs uppercase tracking-[0.14em] text-black/[0.45]">
-              {taskRailState?.threads.length ?? 0} persisted tasks
-            </div>
-          </div>
-        </div>
+
         {session.workspaces.length > 1 && (
-          <div className="mt-4 rounded-[24px] border border-black/10 bg-white/65 px-4 py-3">
-            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-black/[0.42]">
+          <div className="rounded-[18px] border border-black/10 bg-white/70 px-3.5 py-3">
+            <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
               <FolderOpen className="h-3.5 w-3.5" />
               Workspace
             </div>
             <select
               value={activeWorkspaceId ?? ""}
               onChange={(event) => switchWorkspace(event.target.value)}
-              className="mt-3 w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none"
+              className="mt-2.5 w-full rounded-2xl border border-black/10 bg-white px-3 py-2.5 text-sm outline-none"
             >
               {session.workspaces.map((workspace) => (
                 <option key={workspace.workspace_id} value={workspace.workspace_id}>
@@ -922,40 +904,9 @@ export function AppSidebar({
         )}
       </div>
 
-      <div className="surface-card space-y-3 p-4">
-        <Link
-          href={newTaskHref}
-          className="flex items-center gap-3 rounded-[24px] bg-ink px-4 py-3 text-sm text-white transition hover:bg-ink/90"
-        >
-          <MessageSquarePlus className="h-4 w-4" />
-          {selectedProject ? `New Task in ${selectedProject.name}` : "New Task"}
-        </Link>
-
-        <div className="rounded-[20px] border border-black/10 bg-white px-4 py-3">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-black/[0.42]">
-            <Search className="h-3.5 w-3.5" />
-            Search
-          </div>
-          <input
-            ref={searchInputRef}
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder={
-              selectedProject
-                ? `Search ${selectedProject.name} tasks, docs, and artifacts`
-                : "Search projects, tasks, docs, and artifacts"
-            }
-            className="mt-3 w-full bg-transparent text-base leading-7 outline-none placeholder:text-black/[0.35]"
-          />
-          <p className="mt-2 text-xs uppercase tracking-[0.16em] text-black/[0.38]">
-            {selectedProject ? "Project-scoped search" : "Workspace-global search"}
-          </p>
-        </div>
-      </div>
-
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-        <section className="surface-card p-4">
-          <div className="mb-3 flex items-center justify-between gap-3 text-xs uppercase tracking-[0.18em] text-black/[0.42]">
+        <section className="surface-card p-3.5">
+          <div className="mb-3 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
             <div className="flex items-center gap-2">
               <FolderOpen className="h-3.5 w-3.5" />
               Projects
@@ -966,7 +917,7 @@ export function AppSidebar({
                 setProjectFormOpen((current) => !current);
                 setProjectError(null);
               }}
-              className="inline-flex items-center gap-1 rounded-full bg-white/70 px-3 py-1.5 text-[11px] text-black/[0.58] transition hover:bg-white"
+              className="inline-flex items-center gap-1 rounded-full bg-white/70 px-2.5 py-1.5 text-[10px] uppercase tracking-[0.14em] text-black/[0.58] transition hover:bg-white"
             >
               <FolderPlus className="h-3.5 w-3.5" />
               New project
@@ -974,7 +925,7 @@ export function AppSidebar({
           </div>
 
           {projectFormOpen && (
-            <form onSubmit={createProject} className="mb-3 rounded-[24px] border border-black/10 bg-white/70 p-4">
+            <form onSubmit={createProject} className="mb-3 rounded-[18px] border border-black/10 bg-white/70 p-3">
               <input
                 value={projectName}
                 onChange={(event) => setProjectName(event.target.value)}
@@ -985,7 +936,7 @@ export function AppSidebar({
                 value={projectDescription}
                 onChange={(event) => setProjectDescription(event.target.value)}
                 placeholder="Short description"
-                className="mt-3 min-h-[88px] w-full resize-none rounded-2xl bg-sand/55 px-3 py-2 text-sm outline-none"
+                className="mt-3 min-h-[76px] w-full resize-none rounded-2xl bg-sand/55 px-3 py-2 text-sm outline-none"
               />
               {projectError && <p className="mt-3 text-sm text-red-700">{projectError}</p>}
               <div className="mt-3 flex items-center justify-between gap-3">
@@ -1015,7 +966,7 @@ export function AppSidebar({
             <Link
               href={taskRailHref(activeWorkspaceId, null, currentThreadId)}
               className={cn(
-                "block rounded-[22px] border px-4 py-3 transition",
+                "block rounded-[18px] border px-3.5 py-3 transition",
                 !selectedProjectId
                   ? "border-transparent bg-black text-white"
                   : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
@@ -1027,8 +978,8 @@ export function AppSidebar({
                   {taskRailState?.threads.length ?? 0} tasks
                 </span>
               </div>
-              <p className={cn("mt-2 text-sm leading-6", !selectedProjectId ? "text-white/75" : "text-black/[0.56]")}>
-                Cross-project view across the entire workspace.
+              <p className={cn("mt-1.5 text-sm leading-6", !selectedProjectId ? "text-white/75" : "text-black/[0.56]")}>
+                Cross-project task view.
               </p>
             </Link>
 
@@ -1040,7 +991,7 @@ export function AppSidebar({
                     key={project.id}
                     href={taskRailHref(activeWorkspaceId, project.id, projectLeadThreadIds.get(project.id) ?? null)}
                     className={cn(
-                      "block rounded-[22px] border px-4 py-3 transition",
+                      "block rounded-[18px] border px-3.5 py-3 transition",
                       active
                         ? "border-transparent bg-black text-white"
                         : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
@@ -1057,12 +1008,12 @@ export function AppSidebar({
                         {project.thread_count} tasks
                       </span>
                     </div>
-                    <p className={cn("mt-2 text-sm leading-6", active ? "text-white/75" : "text-black/[0.56]")}>
+                    <p className={cn("mt-1.5 text-sm leading-6", active ? "text-white/75" : "text-black/[0.56]")}>
                       {project.description ?? "Project task history"}
                     </p>
                     <div
                       className={cn(
-                        "mt-3 text-[11px] uppercase tracking-[0.16em]",
+                        "mt-2 text-[10px] uppercase tracking-[0.16em]",
                         active ? "text-white/55" : "text-black/[0.42]"
                       )}
                     >
@@ -1074,15 +1025,15 @@ export function AppSidebar({
                 );
               })
             ) : (
-              <div className="rounded-[24px] border border-dashed border-black/10 bg-white/55 px-4 py-4 text-sm text-black/[0.58]">
+              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
                 Create the first project to organize task history by initiative.
               </div>
             )}
           </div>
         </section>
 
-        <section className="surface-card p-4">
-          <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-black/[0.42]">
+        <section className="surface-card p-3.5">
+          <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
             <History className="h-3.5 w-3.5" />
             {searchActive
               ? selectedProject
@@ -1094,22 +1045,22 @@ export function AppSidebar({
           </div>
           <div className="space-y-3">
             {searchActive && !searchReady ? (
-              <div className="rounded-[24px] border border-dashed border-black/10 bg-white/55 px-4 py-4 text-sm text-black/[0.58]">
+              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
                 Type at least 2 characters to search projects, tasks, documents, and artifacts.
               </div>
             ) : searchReady && taskSearchLoading ? (
-              <div className="rounded-[24px] border border-dashed border-black/10 bg-white/55 px-4 py-4 text-sm text-black/[0.58]">
+              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
                 Searching across the workspace...
               </div>
             ) : searchReady && taskSearchError ? (
-              <div className="rounded-[24px] border border-dashed border-black/10 bg-white/55 px-4 py-4 text-sm text-black/[0.58]">
+              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
                 {taskSearchError}
               </div>
             ) : searchReady ? (
               groupedSearchResults.length > 0 ? (
                 <div className="space-y-4">
-                  <div className="rounded-[24px] border border-black/10 bg-white/60 p-4 text-sm text-black/[0.66]">
-                    <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.16em] text-black/[0.42]">
+                  <div className="rounded-[18px] border border-black/10 bg-white/60 p-3 text-sm text-black/[0.66]">
+                    <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.16em] text-black/[0.42]">
                       <span>{taskSearchState?.total_results ?? 0} matches</span>
                       {taskSearchState?.result_counts?.project ? (
                         <span className="rounded-full bg-black/[0.05] px-2 py-1">
@@ -1132,7 +1083,7 @@ export function AppSidebar({
                         </span>
                       ) : null}
                     </div>
-                    <p className="mt-3 leading-7">
+                    <p className="mt-2 leading-6">
                       {selectedProject
                         ? `Showing broader search results connected to ${selectedProject.name}.`
                         : "Showing broader workspace search results across projects, task history, knowledge, and deliverables."}
@@ -1140,7 +1091,7 @@ export function AppSidebar({
                   </div>
                   {groupedSearchResults.map((group) => (
                     <div key={group.key} className="space-y-3">
-                      <div className="rounded-[24px] border border-black/10 bg-white/60 p-4">
+                      <div className="rounded-[18px] border border-black/10 bg-white/60 p-3">
                         <p className="text-sm font-medium text-black/[0.82]">{group.label}</p>
                         <p className="mt-1 text-xs uppercase tracking-[0.16em] text-black/[0.44]">
                           {group.description}
@@ -1151,7 +1102,7 @@ export function AppSidebar({
                   ))}
                 </div>
               ) : (
-                <div className="rounded-[24px] border border-dashed border-black/10 bg-white/55 px-4 py-4 text-sm text-black/[0.58]">
+                <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
                   {selectedProject
                     ? "No projects, tasks, documents, or artifacts matched inside this project scope."
                     : "No projects, tasks, documents, or artifacts matched the current search."}
@@ -1160,7 +1111,7 @@ export function AppSidebar({
             ) : recent.length > 0 ? (
               recent.map((item) => renderTaskItem(item, Boolean(searchActive && !selectedProjectId)))
             ) : (
-              <div className="rounded-[24px] border border-dashed border-black/10 bg-white/55 px-4 py-4 text-sm text-black/[0.58]">
+              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
                 {selectedProject
                   ? "This project does not have task history yet. Start its first task from the rail."
                   : "No task history yet. Start the first task from the rail."}
@@ -1170,14 +1121,14 @@ export function AppSidebar({
         </section>
 
         {!searchActive && !selectedProjectId && groupedProjectTasks.length > 0 && (
-          <section className="surface-card p-4">
-            <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-black/[0.42]">
+          <section className="surface-card p-3.5">
+            <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
               <Layers3 className="h-3.5 w-3.5" />
               Project Task Groups
             </div>
             <div className="space-y-3">
               {groupedProjectTasks.map((group) => (
-                <div key={group.key} className="rounded-[24px] border border-black/10 bg-white/60 p-4">
+                <div key={group.key} className="rounded-[18px] border border-black/10 bg-white/60 p-3">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-medium text-black/[0.82]">{group.label}</p>
@@ -1187,7 +1138,7 @@ export function AppSidebar({
                     </div>
                     <Link
                       href={taskRailHref(activeWorkspaceId, group.key === "__general__" ? null : group.key)}
-                      className="rounded-full bg-sand/70 px-3 py-2 text-[11px] uppercase tracking-[0.14em] text-black/[0.62] transition hover:bg-sand"
+                      className="rounded-full bg-sand/70 px-3 py-1.5 text-[10px] uppercase tracking-[0.14em] text-black/[0.62] transition hover:bg-sand"
                     >
                       Open
                     </Link>
@@ -1202,15 +1153,15 @@ export function AppSidebar({
         )}
 
         {!searchActive && (
-          <section className="surface-card p-4">
-            <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-black/[0.42]">
+          <section className="surface-card p-3.5">
+            <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
               <FileSearch className="h-3.5 w-3.5" />
               {selectedProject ? `${selectedProject.name} History` : "All Tasks"}
             </div>
             <div className="space-y-3">
               {history.map((item) => renderTaskItem(item))}
               {history.length === 0 && recent.length > 0 && (
-                <div className="rounded-[24px] border border-dashed border-black/10 bg-white/55 px-4 py-4 text-sm text-black/[0.58]">
+                <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
                   More task history will appear here as the workspace grows.
                 </div>
               )}
@@ -1218,8 +1169,8 @@ export function AppSidebar({
           </section>
         )}
 
-        <section className="surface-card p-4">
-          <p className="mb-3 text-xs uppercase tracking-[0.18em] text-black/[0.42]">Workspace Surfaces</p>
+        <section className="surface-card p-3.5">
+          <p className="mb-3 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">Workspace Surfaces</p>
           <nav className="space-y-2">
             {workspaceItems.map((item) => {
               const Icon = item.icon;
@@ -1230,7 +1181,7 @@ export function AppSidebar({
                   key={item.href}
                   href={href}
                   className={cn(
-                    "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm transition",
+                    "flex items-center gap-3 rounded-[18px] px-3.5 py-2.5 text-sm transition",
                     active ? "bg-black text-white" : "bg-white/[0.55] text-black/70 hover:bg-white"
                   )}
                 >
@@ -1246,8 +1197,8 @@ export function AppSidebar({
       <div className="surface-card space-y-2 p-3">
         <Link
           href={withWorkspacePath("/app", activeWorkspaceId)}
-          className={cn(
-            "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm transition",
+            className={cn(
+            "flex items-center gap-3 rounded-[18px] px-3.5 py-2.5 text-sm transition",
             pathname === "/app" ? "bg-black text-white" : "bg-white/[0.55] text-black/70 hover:bg-white"
           )}
         >
@@ -1256,7 +1207,7 @@ export function AppSidebar({
         </Link>
         <button
           onClick={signOut}
-          className="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-left text-sm text-black/[0.7] transition hover:bg-white"
+          className="w-full rounded-[18px] border border-black/10 bg-white/75 px-3.5 py-2.5 text-left text-sm text-black/[0.7] transition hover:bg-white"
         >
           Sign out
         </button>

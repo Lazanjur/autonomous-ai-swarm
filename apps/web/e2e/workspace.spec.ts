@@ -50,9 +50,10 @@ test("workspace switching updates the app shell context", async ({ page }) => {
   await page.goto("/app/chat");
 
   const sidebar = page.locator("aside");
-  await page.locator("select").first().selectOption("ws-beta");
+  const workspaceSelect = page.locator("select").first();
+  await workspaceSelect.selectOption("ws-beta");
   await expect(page).toHaveURL(/workspace=ws-beta/);
-  await expect(page.getByRole("heading", { name: "Operations Sandbox" })).toBeVisible();
+  await expect(workspaceSelect).toHaveValue("ws-beta");
   await expect(
     sidebar.getByRole("link", { name: /Run Incident Drill/i }).first()
   ).toBeVisible();

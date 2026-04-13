@@ -334,6 +334,17 @@ function formatToolName(name: string) {
   return name.replaceAll("_", " ");
 }
 
+function formatMessageHoverTime(value: string) {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit"
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
 function attachmentKindLabel(kind: ComposerAttachmentKind) {
   if (kind === "document") {
     return "document";
@@ -1964,6 +1975,7 @@ export function ChatWorkspace({
   const [urlAttachmentDraft, setUrlAttachmentDraft] = useState("");
   const [showComposerAttachments, setShowComposerAttachments] = useState(false);
   const [showComposerShortcuts, setShowComposerShortcuts] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceInterimTranscript, setVoiceInterimTranscript] = useState("");
@@ -2052,6 +2064,7 @@ export function ChatWorkspace({
   const workspaceShellRef = useRef<HTMLElement | null>(null);
   const composerFileInputRef = useRef<HTMLInputElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const copiedMessageTimeoutRef = useRef<number | null>(null);
   const speechRecognitionRef = useRef<BrowserSpeechRecognitionLike | null>(null);
   const autoCreateMarker = useRef<string | null>(null);
   const terminalOutputRef = useRef<HTMLDivElement | null>(null);
@@ -3250,6 +3263,21 @@ export function ChatWorkspace({
     setHeaderNotice("Task link copied to clipboard.");
   }
 
+  async function copyMessageContent(message: Message) {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopiedMessageId(message.id);
+      if (copiedMessageTimeoutRef.current) {
+        window.clearTimeout(copiedMessageTimeoutRef.current);
+      }
+      copiedMessageTimeoutRef.current = window.setTimeout(() => {
+        setCopiedMessageId((current) => (current === message.id ? null : current));
+      }, 1800);
+    } catch {
+      setComposerError("Clipboard access is unavailable for this browser session.");
+    }
+  }
+
   async function togglePublishState() {
     if (!activeThread?.id) {
       return;
@@ -3404,6 +3432,14 @@ export function ChatWorkspace({
     const nextHeight = Math.min(Math.max(textarea.scrollHeight, 48), 120);
     textarea.style.height = `${nextHeight}px`;
   }, [draft]);
+
+  useEffect(() => {
+    return () => {
+      if (copiedMessageTimeoutRef.current) {
+        window.clearTimeout(copiedMessageTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const browserWindow = window as typeof window & {
@@ -5278,9 +5314,9 @@ export function ChatWorkspace({
           </div>
         )}
 
-        <div className="mt-3 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+        <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
           {messages.length === 0 && (
-            <div className="rounded-[24px] border border-black/10 bg-white/92 p-6 text-base leading-8 text-black/70">
+            <div className="rounded-[16px] border border-black/[0.08] bg-black/[0.015] px-4 py-3 text-sm leading-6 text-black/[0.58]">
               {loadingThread
                 ? "Loading thread history..."
                 : activeThread
@@ -5296,125 +5332,138 @@ export function ChatWorkspace({
                   .map((citation) => [String(citation.reference_id), citation] as const)
               );
               const referencedCitationIds = extractCitationReferenceIds(message.content);
+              const isUserMessage = message.role === "user";
+              const messageTimestamp = formatMessageHoverTime(message.created_at);
 
               return (
                 <article
                   key={message.id}
-                  className={
-                    message.role === "assistant"
-                      ? "rounded-[20px] border border-black/10 bg-white/96 px-6 py-5"
-                      : "rounded-[20px] border border-black/10 bg-stone-50/90 px-6 py-5"
-                  }
+                  className={cn("group/message flex", isUserMessage ? "justify-end" : "justify-start")}
                 >
-                  <div className="mb-4 flex items-center justify-between gap-4">
-                    <div className="space-y-1">
-                      <p className="text-[12px] uppercase tracking-[0.14em] text-black/[0.5]">
-                        {message.role === "assistant" ? "Swarm" : "You"}
-                      </p>
-                      <p className="text-sm text-black/[0.48]">{formatRelativeTime(message.created_at)}</p>
-                    </div>
-                    {message.role === "assistant" && message.citations.length > 0 && (
-                      <span className="rounded-full border border-black/10 bg-sand/35 px-3 py-1.5 text-[11px] uppercase tracking-[0.12em] text-black/[0.5]">
-                        grounded
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="space-y-4 text-[15px] leading-8 text-black/[0.8] md:text-[16px]">
-                    {renderMessageContent(message.content, citationLookup)}
-                  </div>
-
-                  {message.citations.length > 0 && (
-                    <div className="mt-5 rounded-[18px] border border-black/10 bg-sand/30 p-4">
-                      <div className="mb-3 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2 text-sm font-medium text-black/[0.76]">
-                          <Globe className="h-4 w-4" />
-                          Sources
-                        </div>
-                        <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.14em] text-black/[0.42]">
-                          {referencedCitationIds.map((referenceId) => (
-                            <span key={`${message.id}-${referenceId}`} className="rounded-full bg-white/80 px-2 py-1">
-                              {referenceId}
-                            </span>
-                          ))}
-                        </div>
+                  <div className={cn("max-w-[min(42rem,100%)]", isUserMessage ? "items-end" : "items-start")}>
+                    {isUserMessage ? (
+                      <div className="inline-block rounded-[16px] border border-black/[0.05] bg-stone-100 px-3.5 py-2.5 text-[15px] leading-6 text-black/[0.82] shadow-[0_1px_6px_rgba(17,19,24,0.03)] md:text-[16px]">
+                        <div className="space-y-2.5">{renderMessageContent(message.content, citationLookup)}</div>
                       </div>
-                      <div className="space-y-3">
-                        {message.citations.map((citation, citationIndex) => {
-                          const href = citationHref(data.workspace_id, citation);
-                          const citationKey =
-                            citation.reference_id ??
-                            citation.document_id ??
-                            citation.chunk_id ??
-                            citation.relative_path ??
-                            citation.url ??
-                            `${message.id}-${citationIndex}`;
-                          const cardClasses = cn(
-                            "block rounded-[16px] bg-white/85 px-4 py-3 text-sm transition",
-                            href ? "hover:bg-white" : ""
-                          );
-                          const cardContent = (
-                            <>
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    {citation.reference_id && (
-                                      <span className="rounded-full bg-black/[0.05] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.55]">
-                                        {citation.reference_id}
-                                      </span>
-                                    )}
-                                    {citation.kind && (
-                                      <span className="rounded-full bg-black/[0.05] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.55]">
-                                        {citation.kind.replaceAll("_", " ")}
-                                      </span>
-                                    )}
-                                    {citation.source_type && (
-                                      <span className="rounded-full bg-black/[0.05] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.55]">
-                                        {citation.source_type}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="mt-2 font-medium text-black/[0.8]">{citation.title}</p>
-                                  {(citation.source_uri || citation.relative_path || citation.agent) && (
-                                    <p className="mt-1 text-xs uppercase tracking-[0.14em] text-black/[0.46]">
-                                      {citation.source_uri ?? citation.relative_path ?? citation.agent}
-                                    </p>
-                                  )}
-                                </div>
-                                {href && <ArrowUpRight className="h-4 w-4 shrink-0 text-black/50" />}
+                    ) : (
+                      <div className="px-1 py-0.5">
+                        <div className="space-y-3 text-[15px] leading-7 text-black/[0.8] md:text-[16px]">
+                          {renderMessageContent(message.content, citationLookup)}
+                        </div>
+
+                        {message.citations.length > 0 && (
+                          <div className="mt-3 rounded-[16px] border border-black/[0.08] bg-sand/18 p-3">
+                            <div className="mb-2 flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-black/[0.58]">
+                                <Globe className="h-3.5 w-3.5" />
+                                Sources
                               </div>
-                              {citation.excerpt && (
-                              <p className="mt-3 text-sm leading-7 text-black/[0.66]">
-                                {citation.excerpt}
-                              </p>
-                              )}
-                              {typeof citation.score === "number" && (
-                                <div className="mt-3 text-[11px] uppercase tracking-[0.16em] text-black/[0.44]">
-                                  Retrieval score {citation.score.toFixed(3)}
-                                </div>
-                              )}
-                            </>
-                          );
-
-                          return href ? (
-                            <a
-                              key={citationKey}
-                              href={href}
-                              target={citation.url ? "_blank" : undefined}
-                              rel={citation.url ? "noreferrer" : undefined}
-                              className={cardClasses}
-                            >
-                              {cardContent}
-                            </a>
-                          ) : (
-                            <div key={citationKey} className={cardClasses}>
-                              {cardContent}
+                              <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.14em] text-black/[0.42]">
+                                {referencedCitationIds.map((referenceId) => (
+                                  <span key={`${message.id}-${referenceId}`} className="rounded-full bg-white/80 px-2 py-1">
+                                    {referenceId}
+                                  </span>
+                                ))}
+                              </div>
                             </div>
-                          );
-                        })}
+                            <div className="space-y-2.5">
+                              {message.citations.map((citation, citationIndex) => {
+                                const href = citationHref(data.workspace_id, citation);
+                                const citationKey =
+                                  citation.reference_id ??
+                                  citation.document_id ??
+                                  citation.chunk_id ??
+                                  citation.relative_path ??
+                                  citation.url ??
+                                  `${message.id}-${citationIndex}`;
+                                const cardClasses = cn(
+                                  "block rounded-[14px] bg-white/88 px-3 py-2.5 text-sm transition",
+                                  href ? "hover:bg-white" : ""
+                                );
+                                const cardContent = (
+                                  <>
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          {citation.reference_id && (
+                                            <span className="rounded-full bg-black/[0.05] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.55]">
+                                              {citation.reference_id}
+                                            </span>
+                                          )}
+                                          {citation.kind && (
+                                            <span className="rounded-full bg-black/[0.05] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.55]">
+                                              {citation.kind.replaceAll("_", " ")}
+                                            </span>
+                                          )}
+                                          {citation.source_type && (
+                                            <span className="rounded-full bg-black/[0.05] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.55]">
+                                              {citation.source_type}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <p className="mt-1.5 font-medium leading-6 text-black/[0.8]">{citation.title}</p>
+                                        {(citation.source_uri || citation.relative_path || citation.agent) && (
+                                          <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-black/[0.46]">
+                                            {citation.source_uri ?? citation.relative_path ?? citation.agent}
+                                          </p>
+                                        )}
+                                      </div>
+                                      {href && <ArrowUpRight className="h-4 w-4 shrink-0 text-black/50" />}
+                                    </div>
+                                    {citation.excerpt && (
+                                      <p className="mt-2 text-sm leading-6 text-black/[0.66]">
+                                        {citation.excerpt}
+                                      </p>
+                                    )}
+                                    {typeof citation.score === "number" && (
+                                      <div className="mt-2 text-[10px] uppercase tracking-[0.16em] text-black/[0.44]">
+                                        Retrieval score {citation.score.toFixed(3)}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+
+                                return href ? (
+                                  <a
+                                    key={citationKey}
+                                    href={href}
+                                    target={citation.url ? "_blank" : undefined}
+                                    rel={citation.url ? "noreferrer" : undefined}
+                                    className={cardClasses}
+                                  >
+                                    {cardContent}
+                                  </a>
+                                ) : (
+                                  <div key={citationKey} className={cardClasses}>
+                                    {cardContent}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
+                    )}
+
+                    <div
+                      className={cn(
+                        "mt-1.5 flex items-center gap-2 text-[11px] text-black/[0.42] opacity-0 transition duration-150 group-hover/message:opacity-100",
+                        isUserMessage ? "justify-end pr-1" : "justify-start pl-1"
+                      )}
+                    >
+                      <span>{messageTimestamp}</span>
+                      <button
+                        type="button"
+                        onClick={() => void copyMessageContent(message)}
+                        className="inline-flex items-center gap-1 rounded-full border border-black/10 bg-white/78 px-2 py-1 text-[11px] text-black/[0.58] transition hover:bg-white"
+                        aria-label={`Copy ${isUserMessage ? "your" : "assistant"} message`}
+                        title="Copy message"
+                      >
+                        <Copy className="h-3 w-3" />
+                        {copiedMessageId === message.id ? "Copied" : "Copy"}
+                      </button>
                     </div>
-                  )}
+                  </div>
                 </article>
               );
             })()
