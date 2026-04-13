@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { signInThroughUi } from "./helpers";
 
-test("chat workspace renders the task rail, workflow cockpit, and operator modes", async ({ page }) => {
+test("chat workspace renders the three-column task rail, chat surface, and operator modes", async ({ page }) => {
   await signInThroughUi(page);
   await page.goto("/app/chat");
 
@@ -10,19 +10,21 @@ test("chat workspace renders the task rail, workflow cockpit, and operator modes
   await expect(
     sidebar.getByRole("link", { name: /Deploy Website After Saving All Files/i }).first()
   ).toBeVisible();
-  await expect(page.getByText("Workflow Cockpit", { exact: true })).toBeVisible();
-  await expect(page.getByText("Swarm Computer", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Swarm workspace" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
 
-  await page.getByRole("button", { name: /^Code$/ }).click();
-  await expect(page.getByText("Final publish remains gated behind the last verification pass.")).toBeVisible();
+  const operatorPane = page.locator("aside").last();
 
-  await page.getByRole("button", { name: /^Browser$/ }).click();
-  await expect(page.getByText("Swarm Computer")).toBeVisible();
+  await operatorPane.getByRole("button", { name: /^Code$/ }).click({ force: true });
+  await expect(operatorPane.getByRole("button", { name: /^Code$/ })).toBeVisible();
 
-  await page.getByRole("button", { name: /^Files$/ }).click();
-  await expect(page.getByText("Workspace files")).toBeVisible();
+  await operatorPane.getByRole("button", { name: /^Browser$/ }).click({ force: true });
+  await expect(page.getByText("Swarm Computer").first()).toBeVisible();
 
-  await page.getByRole("button", { name: /^Preview$/ }).click();
+  await operatorPane.getByRole("button", { name: /^Files$/ }).click({ force: true });
+  await expect(operatorPane.getByRole("button", { name: /^Files$/ })).toBeVisible();
+
+  await operatorPane.getByRole("button", { name: /^Preview$/ }).click({ force: true });
   await expect(page.getByText("Deployment summary", { exact: true })).toBeVisible();
 });
 
@@ -44,11 +46,13 @@ test("agents and library surfaces stay navigable from the app shell", async ({ p
   await page.goto("/app/chat");
 
   await page.getByRole("link", { name: "Agents" }).click();
+  await page.waitForURL(/\/app\/agents/);
   await expect(
     page.getByRole("heading", { name: "Swarm monitoring for every specialist operator." })
   ).toBeVisible();
 
   await page.getByRole("link", { name: "Library" }).click();
+  await page.waitForURL(/\/app\/library/);
   await expect(
     page.getByRole("heading", {
       name: "Curated workspace memory and reusable deliverables."

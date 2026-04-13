@@ -34,13 +34,13 @@ export default async function AppLayout({
   const taskRail = initialTaskRailWorkspaceId ? await getTaskRail(initialTaskRailWorkspaceId) : null;
 
   return (
-    <main className="mx-auto max-w-[1820px] px-3 py-3 lg:px-5 lg:py-5">
-      <div className="app-shell-frame p-3 lg:p-4">
-        <div className="app-shell-grid grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-          <div className="xl:sticky xl:top-5 xl:self-start">
+    <main className="mx-auto min-h-dvh max-w-[1600px] px-2 py-2 lg:px-3 lg:py-3">
+      <div className="app-shell-frame p-2 lg:p-3">
+        <div className="app-shell-grid grid gap-3 xl:grid-cols-[272px_minmax(0,1fr)] 2xl:grid-cols-[292px_minmax(0,1fr)]">
+          <div className="min-h-0 xl:sticky xl:top-3 xl:self-start">
             <AppSidebar session={session} taskRail={taskRail} />
           </div>
-          <div className="shell-main p-2 lg:p-3">{children}</div>
+          <div className="shell-main min-h-0 p-2 lg:p-2.5">{children}</div>
         </div>
       </div>
     </main>

@@ -296,9 +296,9 @@ const OPERATOR_TAB_OPTIONS: Array<{
   { key: "artifacts", label: "Artifacts", icon: Boxes }
 ];
 
-const DEFAULT_WORKSPACE_SPLIT = 56;
-const MIN_WORKSPACE_SPLIT = 42;
-const MAX_WORKSPACE_SPLIT = 72;
+const DEFAULT_WORKSPACE_SPLIT = 50;
+const MIN_WORKSPACE_SPLIT = 44;
+const MAX_WORKSPACE_SPLIT = 64;
 const WORKSPACE_LAYOUT_STORAGE_KEY = "swarm.workspace.layout.v1";
 const CITATION_REFERENCE_PATTERN = /\[(S\d+)\]/g;
 
@@ -3363,7 +3363,7 @@ export function ChatWorkspace({
   }, [loadingThread, running, searchParamKey, wantsNewTask]);
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia("(min-width: 1280px)");
+    const mediaQuery = window.matchMedia("(min-width: 1200px)");
     const syncDesktopMode = () => {
       setIsDesktopWorkspace(mediaQuery.matches);
       if (!mediaQuery.matches) {
@@ -4435,10 +4435,10 @@ export function ChatWorkspace({
   return (
     <section
       ref={workspaceShellRef}
-      className="grid grid-cols-1 gap-4 xl:items-start xl:gap-0 xl:[grid-template-columns:var(--workspace-columns)]"
+      className="grid grid-cols-1 gap-3 xl:h-full xl:min-h-0 xl:items-stretch xl:gap-0 xl:[grid-template-columns:var(--workspace-columns)]"
       style={workspaceShellStyle}
     >
-      <div className="min-w-0">
+      <div className="min-w-0 min-h-0">
         {isDesktopWorkspace && workspacePaneCollapsed ? (
           <div className="surface-card-strong flex h-full min-h-[calc(100vh-13rem)] flex-col items-center justify-between px-3 py-5">
             <button
@@ -4461,12 +4461,13 @@ export function ChatWorkspace({
             </div>
           </div>
         ) : (
-          <div className="surface-card-strong h-full p-6 lg:p-7">
-        <motion.div layout className="operating-strip mb-6">
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.9fr)]">
+          <div className="surface-card-strong flex h-full min-h-0 flex-col p-4 lg:p-5">
+        <div className="flex min-h-0 flex-1 flex-col">
+        <motion.div layout className="operating-strip mb-4 px-4 py-3 xl:hidden">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
             <div>
-              <p className="surface-label">Workspace Operating Strip</p>
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.14em] text-black/[0.5]">
+              <p className="surface-label">Task cockpit</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-black/[0.5]">
                 <span className="rounded-full bg-black text-white px-3 py-1.5">
                   {activeThread ? "Active task" : currentProjectId ? "Project queue" : "Workspace ready"}
                 </span>
@@ -4489,17 +4490,17 @@ export function ChatWorkspace({
                   {isTaskPaused ? "Paused" : running ? "Running live" : "Ready for next run"}
                 </span>
               </div>
-              <p className="mt-4 surface-subcopy">
-                The rail, conversation, execution state, and computer sessions are meant to read like one operating surface, so you can steer a task without leaving context.
+              <p className="mt-3 text-sm leading-6 text-black/[0.62]">
+                Mobile and compact layouts keep a lighter task summary above the conversation.
               </p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <motion.div layout className="rounded-[22px] bg-white/76 px-4 py-4">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <motion.div layout className="rounded-[20px] bg-white/76 px-3 py-3">
                 <p className="surface-label">Checklist</p>
-                <p className="mt-2 text-2xl font-display text-black/[0.82]">
+                <p className="mt-2 text-xl font-display text-black/[0.82]">
                   {completedChecklistCount}/{checklistItems.length}
                 </p>
-                <p className="mt-2 text-sm text-black/[0.6]">Steps completed in the current orchestration plan.</p>
+                <p className="mt-1 text-xs text-black/[0.6]">Plan progress</p>
                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/[0.08]">
                   <motion.div
                     className="h-full rounded-full bg-gradient-to-r from-ink via-pine to-sand"
@@ -4508,45 +4509,27 @@ export function ChatWorkspace({
                   />
                 </div>
               </motion.div>
-              <motion.div layout className="rounded-[22px] bg-white/72 px-4 py-4">
+              <motion.div layout className="rounded-[20px] bg-white/72 px-3 py-3">
                 <p className="surface-label">Approvals</p>
-                <p className="mt-2 text-2xl font-display text-black/[0.82]">
+                <p className="mt-2 text-xl font-display text-black/[0.82]">
                   {pendingApprovalRequests.length}
                 </p>
-                <p className="mt-2 text-sm text-black/[0.6]">Human checkpoints currently waiting in this task.</p>
+                <p className="mt-1 text-xs text-black/[0.6]">Human gates</p>
               </motion.div>
-              <motion.div layout className="rounded-[22px] bg-white/72 px-4 py-4">
+              <motion.div layout className="rounded-[20px] bg-white/72 px-3 py-3">
                 <p className="surface-label">Computer Sessions</p>
-                <p className="mt-2 text-2xl font-display text-black/[0.82]">{computerSessions.length}</p>
-                <p className="mt-2 text-sm text-black/[0.6]">Browser and terminal sessions tracked in real time.</p>
+                <p className="mt-2 text-xl font-display text-black/[0.82]">{computerSessions.length}</p>
+                <p className="mt-1 text-xs text-black/[0.6]">Browser + terminal</p>
               </motion.div>
-              <motion.div layout className="rounded-[22px] bg-white/76 px-4 py-4">
+              <motion.div layout className="rounded-[20px] bg-white/76 px-3 py-3">
                 <p className="surface-label">Outputs</p>
-                <p className="mt-2 text-2xl font-display text-black/[0.82]">{mergedArtifacts.length}</p>
-                <p className="mt-2 text-sm text-black/[0.6]">Artifacts and deliverables linked back into the task.</p>
+                <p className="mt-2 text-xl font-display text-black/[0.82]">{mergedArtifacts.length}</p>
+                <p className="mt-1 text-xs text-black/[0.6]">Deliverables</p>
               </motion.div>
             </div>
           </div>
-          <div className="mt-5 rounded-[24px] border border-black/10 bg-white/72 px-4 py-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="surface-label">Task Continuity</p>
-                <p className="mt-2 text-sm leading-7 text-black/[0.64]">
-                  Planning, live execution, and deliverables now stay visually connected so the workspace feels like one continuous run loop.
-                </p>
-              </div>
-              <div className="rounded-full bg-black/[0.04] px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.48]">
-                {running ? "Streaming live" : "Ready for next cycle"}
-              </div>
-            </div>
-            <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="mt-3 flex flex-wrap gap-2">
               {operatingFlowStages.map((stage, index) => {
-                const stageProgress =
-                  stage.status === "complete"
-                    ? 100
-                    : stage.status === "active"
-                      ? 62
-                      : 18;
                 return (
                   <motion.button
                     key={stage.key}
@@ -4554,66 +4537,32 @@ export function ChatWorkspace({
                     type="button"
                     onClick={() => setOperatorTab(stage.tab)}
                     className={cn(
-                      "rounded-[22px] border px-4 py-4 text-left transition",
+                      "rounded-full border px-3 py-2 text-left text-xs uppercase tracking-[0.14em] transition",
                       stage.status === "complete"
                         ? "border-emerald-200 bg-emerald-50/75"
                         : stage.status === "active"
-                          ? "border-ink/20 bg-white/88 shadow-[0_14px_34px_rgba(15,58,50,0.09)]"
+                          ? "border-ink/20 bg-white/88 shadow-[0_10px_24px_rgba(15,58,50,0.08)]"
                           : "border-black/10 bg-white/72"
                     )}
                     whileHover={prefersReducedMotion ? undefined : { y: -2 }}
                     transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 230, damping: 24 }}
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.18em] text-black/[0.44]">
-                          {index + 1}. {stage.label}
-                        </p>
-                        <p className="mt-2 text-base font-medium text-black/[0.82]">{stage.value}</p>
-                      </div>
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-1 text-[10px] uppercase tracking-[0.14em]",
-                          stage.status === "complete"
-                            ? "bg-emerald-600 text-white"
-                            : stage.status === "active"
-                              ? "bg-ink text-white"
-                              : "bg-black/[0.05] text-black/[0.5]"
-                        )}
-                      >
-                        {stage.status}
-                      </span>
-                    </div>
-                    <p className="mt-3 text-sm leading-6 text-black/[0.66]">{stage.caption}</p>
-                    <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-black/[0.08]">
-                      <motion.div
-                        className={cn(
-                          "h-full rounded-full",
-                          stage.status === "complete"
-                            ? "bg-emerald-500"
-                            : stage.status === "active"
-                              ? "bg-gradient-to-r from-ink via-pine to-sand"
-                              : "bg-black/[0.18]"
-                        )}
-                        animate={{ width: `${stageProgress}%` }}
-                        transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 190, damping: 30 }}
-                      />
-                    </div>
+                    <span className="text-black/[0.46]">{index + 1}.</span> {stage.label} {" "}
+                    <span className="font-medium text-black/[0.78]">{stage.value}</span>
                   </motion.button>
                 );
               })}
-            </div>
           </div>
         </motion.div>
-        <div className="flex items-start justify-between gap-4 border-b border-black/10 pb-5">
+        <div className="flex items-start justify-between gap-4 border-b border-black/10 pb-4">
           <div>
             <Badge>Autonomous Chat</Badge>
-            <h1 className="mt-3 font-display text-4xl">Swarm workspace</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-7 text-black/[0.65]">
-              Real threads, persisted run history, and a live operator canvas now share the same runtime surface.
+            <h1 className="mt-2 font-display text-3xl xl:text-[2rem]">Swarm workspace</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-black/[0.65] xl:max-w-xl">
+              The center column stays conversation-first, while the right column carries the operator state and workbench.
             </p>
           </div>
-          <div className="flex max-w-[720px] flex-col items-end gap-3">
+          <div className="flex max-w-[720px] flex-col items-end gap-2">
             <div className="flex flex-wrap items-center justify-end gap-2">
               {running && (
                 <Badge className="bg-ink text-white border-transparent">
@@ -4854,7 +4803,7 @@ export function ChatWorkspace({
           </div>
         )}
 
-        <div className="workflow-surface mt-4">
+        <div className="workflow-surface mt-4 xl:hidden">
           <div className="workflow-surface-header">
             <div>
               <p className="surface-label">Workflow Cockpit</p>
@@ -5082,7 +5031,7 @@ export function ChatWorkspace({
         </div>
 
         {(isTaskPaused || pendingApprovalRequests.length > 0) && (
-          <div className="mt-4 space-y-4">
+          <div className="mt-4 space-y-4 xl:hidden">
             {isTaskPaused && (
               <div className="rounded-[26px] border border-amber-200 bg-amber-50/90 p-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
@@ -5182,7 +5131,7 @@ export function ChatWorkspace({
         )}
 
         {(activeTaskMemory || activeProjectMemory) && (
-          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <div className="mt-4 grid gap-4 xl:hidden xl:grid-cols-2">
             {activeTaskMemory && (
               <div className="rounded-[26px] border border-black/10 bg-white/78 p-5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -5303,7 +5252,7 @@ export function ChatWorkspace({
           </div>
         )}
 
-        <div className="mt-6 space-y-5">
+        <div className="mt-5 min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
           {messages.length === 0 && (
             <div className="rounded-[28px] border border-black/10 bg-white/70 p-6 text-sm leading-7 text-black/70">
               {loadingThread
@@ -5457,7 +5406,7 @@ export function ChatWorkspace({
         </div>
 
         {taskTemplates.length > 0 && (
-          <div className="mt-6 rounded-[26px] border border-black/10 bg-white/82 p-5">
+          <div className="mt-6 rounded-[26px] border border-black/10 bg-white/82 p-5 xl:hidden">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
@@ -5579,7 +5528,7 @@ export function ChatWorkspace({
           </div>
         )}
 
-        <form className="mt-6 border-t border-black/10 pt-5" onSubmit={handleSubmit}>
+        <form className="mt-4 shrink-0 border-t border-black/10 pt-4" onSubmit={handleSubmit}>
           <div className="rounded-[28px] border border-black/10 bg-white/75 p-4">
             <input
               ref={composerFileInputRef}
@@ -5819,6 +5768,7 @@ export function ChatWorkspace({
           {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
         </form>
           </div>
+          </div>
         )}
       </div>
 
@@ -5854,7 +5804,7 @@ export function ChatWorkspace({
         </button>
       </div>
 
-      <div className="min-w-0">
+      <div className="min-w-0 min-h-0">
         {isDesktopWorkspace && operatorPaneCollapsed ? (
           <div className="surface-card-strong flex h-full min-h-[calc(100vh-13rem)] flex-col items-center justify-between px-3 py-5">
             <button
@@ -5877,15 +5827,15 @@ export function ChatWorkspace({
             </div>
           </div>
         ) : (
-      <aside className="space-y-4">
-        <div className="surface-card-strong overflow-hidden p-0">
-          <div className="border-b border-black/10 px-5 py-4">
+      <aside className="flex h-full min-h-0 flex-col space-y-3">
+        <div className="surface-card-strong flex h-full min-h-0 flex-col overflow-hidden p-0">
+          <div className="border-b border-black/10 px-4 py-4">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs uppercase tracking-[0.18em] text-black/[0.45]">Swarm Computer</p>
-                <h2 className="mt-2 font-display text-2xl">Live operator canvas</h2>
-                <p className="mt-2 text-sm leading-7 text-black/[0.62]">
-                  Code browsing, browser captures, terminal runs, and generated files appear here as the swarm works.
+                <h2 className="mt-1 font-display text-[1.6rem] leading-none">Workbench</h2>
+                <p className="mt-2 text-sm leading-6 text-black/[0.62]">
+                  All execution, progress, approvals, and file work stay in this right-side operator column.
                 </p>
               </div>
               <div className="flex items-start gap-3">
@@ -5904,45 +5854,37 @@ export function ChatWorkspace({
                 </button>
               </div>
             </div>
-            <div className="operating-strip mt-4">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-[20px] bg-white/80 px-4 py-3">
-                  <p className="surface-label">Browser</p>
-                  <p className="mt-2 text-lg font-display text-black/[0.82]">{browserSessions.length}</p>
-                  <p className="mt-1 text-xs uppercase tracking-[0.14em] text-black/[0.44]">Tracked sessions</p>
-                </div>
-                <div className="rounded-[20px] bg-white/78 px-4 py-3">
-                  <p className="surface-label">Terminal</p>
-                  <p className="mt-2 text-lg font-display text-black/[0.82]">{terminalSessions.length}</p>
-                  <p className="mt-1 text-xs uppercase tracking-[0.14em] text-black/[0.44]">Active + persisted runs</p>
-                </div>
-                <div className="rounded-[20px] bg-white/80 px-4 py-3">
-                  <p className="surface-label">Workbench</p>
-                  <p className="mt-2 text-lg font-display text-black/[0.82]">
-                    {(rootWorkbenchTree?.entries.length ?? 0) || mergedArtifacts.length}
-                  </p>
-                  <p className="mt-1 text-xs uppercase tracking-[0.14em] text-black/[0.44]">Tracked files and outputs</p>
-                </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <div className="rounded-full bg-white/80 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.56]">
+                {browserSessions.length} browser
+              </div>
+              <div className="rounded-full bg-white/78 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.56]">
+                {terminalSessions.length} terminal
+              </div>
+              <div className="rounded-full bg-white/80 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.56]">
+                {(rootWorkbenchTree?.entries.length ?? 0) || mergedArtifacts.length} tracked
+              </div>
+              <div className="rounded-full bg-white/80 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.56]">
+                {runningComputerSessionCount} live
               </div>
             </div>
-            <div className="workflow-node workflow-node-accent mt-4">
-              <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="mt-3 rounded-[20px] border border-black/10 bg-white/76 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="surface-label">Linked Workflow Focus</p>
-                  <h3 className="mt-2 text-lg font-medium text-black/[0.82]">{workflowFocusTitle}</h3>
-                  <p className="mt-2 text-sm leading-7 text-black/[0.62]">{workflowFocusSummary}</p>
+                  <p className="surface-label">Linked workflow focus</p>
+                  <p className="mt-1 text-sm font-medium text-black/[0.82]">{workflowFocusTitle}</p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setOperatorTab(workflowRecommendedTab)}
-                  className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white"
+                  className="inline-flex items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs uppercase tracking-[0.14em] text-white"
                 >
-                  <MonitorSmartphone className="h-4 w-4" />
-                  Stay in {workflowRecommendedTabLabel}
+                  <MonitorSmartphone className="h-3.5 w-3.5" />
+                  {workflowRecommendedTabLabel}
                 </button>
               </div>
               {workflowStateChips.length > 0 && (
-                <div className="mt-4 flex flex-wrap gap-2">
+                <div className="mt-3 flex flex-wrap gap-2">
                   {workflowStateChips.map((chip) => (
                     <span key={`operator-${chip}`} className="workflow-chip">
                       {chip}
@@ -5951,7 +5893,7 @@ export function ChatWorkspace({
                 </div>
               )}
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               {OPERATOR_TAB_OPTIONS.map((tab) => {
                 const Icon = tab.icon;
                 const active = operatorTab === tab.key;
@@ -5962,7 +5904,7 @@ export function ChatWorkspace({
                     type="button"
                     onClick={() => setOperatorTab(tab.key as OperatorTab)}
                     className={cn(
-                      "relative inline-flex items-center gap-2 overflow-hidden rounded-full border border-black/10 px-4 py-2 text-sm transition",
+                      "relative inline-flex items-center gap-2 overflow-hidden rounded-full border border-black/10 px-3 py-2 text-xs uppercase tracking-[0.14em] transition",
                       active ? "text-white" : "bg-white/70 text-black/[0.7] hover:bg-white"
                     )}
                     whileHover={prefersReducedMotion ? undefined : { y: -1 }}
@@ -5976,7 +5918,7 @@ export function ChatWorkspace({
                       />
                     )}
                     <span className="relative z-10 inline-flex items-center gap-2">
-                      <Icon className="h-4 w-4" />
+                      <Icon className="h-3.5 w-3.5" />
                       {tab.label}
                     </span>
                   </motion.button>
@@ -5984,7 +5926,7 @@ export function ChatWorkspace({
               })}
             </div>
           </div>
-          <div className="max-h-[840px] overflow-y-auto p-5">
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
             <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={operatorTab}
@@ -6498,6 +6440,170 @@ export function ChatWorkspace({
                       </p>
                     </div>
                   </div>
+
+                  {(isTaskPaused || pendingApprovalRequests.length > 0) && (
+                    <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)]">
+                      {isTaskPaused && (
+                        <div className="rounded-[22px] border border-amber-200 bg-amber-50/90 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.16em] text-amber-900/72">Task state</p>
+                              <p className="mt-2 text-sm font-medium text-amber-950">Task paused</p>
+                              <p className="mt-2 text-sm leading-6 text-amber-900/80">
+                                New runs are blocked until you resume this task.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void setTaskStatus("active")}
+                              disabled={headerActionLoading === "active"}
+                              className="inline-flex items-center gap-2 rounded-full bg-amber-950 px-3 py-2 text-xs uppercase tracking-[0.14em] text-white disabled:opacity-60"
+                            >
+                              <Play className="h-3.5 w-3.5" />
+                              {headerActionLoading === "active" ? "Resuming..." : "Resume"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {pendingApprovalRequests.length > 0 && (
+                        <div className="rounded-[22px] border border-amber-200 bg-white/86 p-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">Pending approvals</p>
+                              <p className="mt-2 text-sm font-medium text-black/[0.82]">
+                                {pendingApprovalRequests.length} action{pendingApprovalRequests.length === 1 ? "" : "s"} waiting
+                              </p>
+                            </div>
+                            <Badge className="bg-amber-600 text-white border-transparent">human review</Badge>
+                          </div>
+                          <div className="mt-3 space-y-2">
+                            {pendingApprovalRequests.slice(0, 2).map((request) => (
+                              <div key={request.id} className="rounded-[18px] border border-amber-200 bg-amber-50/55 p-3">
+                                <p className="text-sm font-medium text-black/[0.82]">{request.title}</p>
+                                <p className="mt-2 text-sm leading-6 text-black/[0.68]">
+                                  {compactText(request.reason, 180)}
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => void approvePendingRequest(request)}
+                                    disabled={approvalActionLoading === request.id || running || isTaskPaused}
+                                    className="inline-flex items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs uppercase tracking-[0.14em] text-white disabled:opacity-60"
+                                  >
+                                    <ShieldCheck className="h-3.5 w-3.5" />
+                                    {approvalActionLoading === request.id ? "Approving..." : "Approve"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void deferPendingRequest(request)}
+                                    disabled={approvalActionLoading === request.id}
+                                    className="rounded-full border border-black/10 bg-white/85 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.72] disabled:opacity-60"
+                                  >
+                                    Keep blocked
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {(activeTaskMemory || activeProjectMemory) && (
+                    <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                      {activeTaskMemory && (
+                        <div className="rounded-[22px] border border-black/10 bg-white/76 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">Task memory</p>
+                              <p className="mt-2 text-sm font-medium text-black/[0.82]">Shared task context</p>
+                            </div>
+                            <span className="rounded-full bg-black/[0.04] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-black/[0.5]">
+                              {activeTaskMemory.run_count} refreshes
+                            </span>
+                          </div>
+                          {activeTaskMemory.summary && (
+                            <p className="mt-3 text-sm leading-6 text-black/[0.68]">
+                              {compactText(activeTaskMemory.summary, 220)}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      {activeProjectMemory && (
+                        <div className="rounded-[22px] border border-black/10 bg-white/76 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">Project memory</p>
+                              <p className="mt-2 text-sm font-medium text-black/[0.82]">
+                                {selectedProject?.name ? `${selectedProject.name} context` : "Shared project context"}
+                              </p>
+                            </div>
+                            <span className="rounded-full bg-black/[0.04] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-black/[0.5]">
+                              {activeProjectMemory.run_count} updates
+                            </span>
+                          </div>
+                          {activeProjectMemory.summary && (
+                            <p className="mt-3 text-sm leading-6 text-black/[0.68]">
+                              {compactText(activeProjectMemory.summary, 220)}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {taskTemplates.length > 0 && (
+                    <div className="mt-4 rounded-[22px] border border-black/10 bg-white/76 p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">Task templates</p>
+                          <p className="mt-2 text-sm font-medium text-black/[0.82]">Launch a workflow preset</p>
+                        </div>
+                        {selectedTaskTemplate && (
+                          <span className="rounded-full bg-black/[0.04] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-black/[0.5]">
+                            {selectedTaskTemplate.name}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {taskTemplates.slice(0, 6).map((template) => {
+                          const isSelected = selectedTaskTemplateKey === template.key;
+                          return (
+                            <button
+                              key={template.key}
+                              type="button"
+                              onClick={() => applyTaskTemplate(template)}
+                              className={cn(
+                                "rounded-full border px-3 py-2 text-xs uppercase tracking-[0.14em] transition",
+                                isSelected
+                                  ? "border-transparent bg-ink text-white"
+                                  : "border-black/10 bg-white text-black/[0.68] hover:bg-sand/45"
+                              )}
+                            >
+                              {template.name}
+                            </button>
+                          );
+                        })}
+                        {selectedTaskTemplate && (
+                          <button
+                            type="button"
+                            onClick={clearTaskTemplate}
+                            className="rounded-full border border-black/10 bg-white px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.68] transition hover:bg-sand/45"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      {selectedTaskTemplate && (
+                        <p className="mt-3 text-sm leading-6 text-black/[0.68]">
+                          {selectedTaskTemplate.chat_defaults.prompt}
+                        </p>
+                      )}
+                      {templateNotice && <p className="mt-3 text-sm text-emerald-700">{templateNotice}</p>}
+                    </div>
+                  )}
                   </div>
                 )}
 
