@@ -150,3 +150,122 @@ async def test_scheduled_approval_required_creates_awaiting_execution(monkeypatc
     assert result.status == "awaiting_approval"
     assert automation.status == "awaiting_approval"
     assert automation.next_run_at is None
+
+
+@pytest.mark.asyncio
+async def test_execute_automation_returns_existing_inflight_execution(monkeypatch):
+    service = AutomationService()
+    session = DummySession()
+    automation = SimpleNamespace(
+        id=uuid4(),
+        workspace_id=uuid4(),
+        name="Board digest",
+        description="Create a digest.",
+        schedule="daily@08:00",
+        status="active",
+        definition={"prompt": "Create the board digest.", "timezone": "UTC", "requires_approval": False},
+    )
+    inflight = SimpleNamespace(
+        id=uuid4(),
+        automation_id=automation.id,
+        workspace_id=automation.workspace_id,
+        status="running",
+    )
+
+    async def fake_inflight(session, automation_id):
+        return inflight
+
+    monkeypatch.setattr(service, "get_inflight_execution", fake_inflight)
+
+    result = await service.execute_automation(session, automation, trigger="manual")
+
+    assert result is inflight
+
+
+@pytest.mark.asyncio
+async def test_scheduled_approval_execution_queues_notification_history(monkeypatch):
+    service = AutomationService()
+    session = DummySession()
+    automation = SimpleNamespace(
+        id=uuid4(),
+        workspace_id=uuid4(),
+        name="Regulatory watch",
+        description="Watch regulations.",
+        schedule="daily@08:00",
+        status="active",
+        definition={
+            "prompt": "Monitor regulations.",
+            "timezone": "UTC",
+            "requires_approval": True,
+            "notify_on": ["approval_requested"],
+            "notify_channels": ["email:ops@example.com"],
+        },
+        next_run_at=utc_now(),
+    )
+    awaiting = SimpleNamespace(
+        id=uuid4(),
+        automation_id=automation.id,
+        workspace_id=automation.workspace_id,
+        status="awaiting_approval",
+        trigger="scheduled",
+        attempt=1,
+        result_summary="Scheduled run paused pending manual approval.",
+        metadata={},
+    )
+
+    async def fake_create_execution(session, *, automation, trigger, status, attempt, result_summary=None):
+        awaiting.status = status
+        awaiting.trigger = trigger
+        awaiting.result_summary = result_summary
+        awaiting.metadata_ = service._base_execution_metadata(automation, trigger=trigger, attempt=attempt)
+        return awaiting
+
+    async def fake_queue_notifications(*, automation, execution, event_name):
+        return [
+            {
+                "channel": "email",
+                "target": "ops@example.com",
+                "event": event_name,
+                "status": "queued",
+                "storage_key": "notifications/outbox/email/test.json",
+                "response_status": None,
+                "detail": "Queued",
+                "timestamp": utc_now().isoformat(),
+            }
+        ]
+
+    monkeypatch.setattr(service, "_create_execution", fake_create_execution)
+    monkeypatch.setattr(service, "_queue_notifications", fake_queue_notifications)
+
+    result = await service.execute_automation(session, automation, trigger="scheduled")
+
+    assert result.status == "awaiting_approval"
+    assert result.metadata_["notifications"][0]["event"] == "approval_requested"
+    assert any(event["type"] == "notification.queued" for event in result.metadata_["events"])
+
+
+def test_retry_state_counts_remaining_retry_slots():
+    service = AutomationService()
+    automation = SimpleNamespace(definition={"retry_limit": 2})
+    execution = SimpleNamespace(attempt=1)
+
+    first_attempt = service._retry_state(
+        execution=execution,
+        automation=automation,
+        next_retry_at=None,
+        backoff_seconds=None,
+        last_error=None,
+        retryable=True,
+    )
+    execution.attempt = 2
+    second_attempt = service._retry_state(
+        execution=execution,
+        automation=automation,
+        next_retry_at=None,
+        backoff_seconds=None,
+        last_error=None,
+        retryable=True,
+    )
+
+    assert first_attempt["attempts_remaining"] == 2
+    assert second_attempt["attempts_remaining"] == 1

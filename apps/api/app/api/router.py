@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import admin, artifacts, auth, automations, chat, documents, health, session
+from app.api.routes import admin, artifacts, auth, automations, chat, documents, health, library, session
 
 api_router = APIRouter()
 api_router.include_router(health.router, prefix="/health", tags=["health"])
@@ -10,4 +10,5 @@ api_router.include_router(session.router, prefix="/session", tags=["session"])
 api_router.include_router(chat.router, prefix="/chat", tags=["chat"])
 api_router.include_router(documents.router, prefix="/documents", tags=["documents"])
 api_router.include_router(artifacts.router, prefix="/artifacts", tags=["artifacts"])
+api_router.include_router(library.router, prefix="/library", tags=["library"])
 api_router.include_router(automations.router, prefix="/automations", tags=["automations"])

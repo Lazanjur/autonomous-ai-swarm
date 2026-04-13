@@ -8,8 +8,13 @@ import {
   getWorkspaceDocuments,
   getWorkspaceKnowledgeHealth
 } from "@/lib/api";
+import { resolveActiveWorkspace } from "@/lib/workspace";
 
-export default async function KnowledgePage() {
+export default async function KnowledgePage({
+  searchParams
+}: {
+  searchParams?: Promise<{ workspace?: string; q?: string; document?: string }>;
+}) {
   const session = await getCurrentSession();
   if (!session || session.workspaces.length === 0) {
     if (await hasSessionCookie()) {
@@ -26,7 +31,10 @@ export default async function KnowledgePage() {
     redirect("/signin");
   }
 
-  const workspaceId = session.workspaces[0].workspace_id;
+  const params = searchParams ? await searchParams : undefined;
+  const activeWorkspace = resolveActiveWorkspace(session, params?.workspace);
+  const workspace = activeWorkspace ?? session.workspaces[0];
+  const workspaceId = workspace.workspace_id;
   const [documents, artifacts, health] = await Promise.all([
     getWorkspaceDocuments(workspaceId),
     getWorkspaceArtifacts(workspaceId),
@@ -51,6 +59,8 @@ export default async function KnowledgePage() {
       documents={documents}
       artifacts={artifacts}
       health={health}
+      initialQuery={params?.q ?? ""}
+      highlightedDocumentId={params?.document ?? null}
     />
   );
 }

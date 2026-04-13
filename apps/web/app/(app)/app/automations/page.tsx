@@ -4,11 +4,17 @@ import { AutomationHub } from "@/components/automations/automation-hub";
 import {
   getAutomationDashboard,
   getCurrentSession,
+  getTaskTemplates,
   getWorkspaceAutomations,
   hasSessionCookie
 } from "@/lib/api";
+import { resolveActiveWorkspace } from "@/lib/workspace";
 
-export default async function AutomationsPage() {
+export default async function AutomationsPage({
+  searchParams
+}: {
+  searchParams?: Promise<{ workspace?: string }>;
+}) {
   const session = await getCurrentSession();
   if (!session?.workspaces?.length) {
     if (await hasSessionCookie()) {
@@ -24,7 +30,10 @@ export default async function AutomationsPage() {
     redirect("/signin");
   }
 
-  const workspaceId = session.workspaces[0].workspace_id;
+  const params = searchParams ? await searchParams : undefined;
+  const activeWorkspace = resolveActiveWorkspace(session, params?.workspace);
+  const workspace = activeWorkspace ?? session.workspaces[0];
+  const workspaceId = workspace.workspace_id;
   const automations = await getWorkspaceAutomations(workspaceId);
   if (!automations) {
     return (
@@ -37,12 +46,14 @@ export default async function AutomationsPage() {
     );
   }
   const initialDashboard = automations[0] ? await getAutomationDashboard(automations[0].id) : null;
+  const templateCatalog = await getTaskTemplates(workspaceId);
 
   return (
     <AutomationHub
       workspaceId={workspaceId}
       automations={automations}
       initialDashboard={initialDashboard}
+      taskTemplates={templateCatalog?.templates ?? []}
     />
   );
 }

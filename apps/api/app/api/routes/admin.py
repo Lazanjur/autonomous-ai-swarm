@@ -10,16 +10,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.deps import AuthContext, require_auth_context
 from app.db.session import get_session
-from app.models.entities import AuditLog, Automation, AutomationExecution, UsageEvent, utc_now
-from app.schemas.admin import OpsDashboardResponse
+from app.models.entities import AuditLog, Automation, AutomationExecution, UsageEvent, Workspace, WorkspaceMembership, utc_now
+from app.schemas.admin import (
+    AdminSearchResponse,
+    EnterpriseAdminResponse,
+    EnterpriseAuditBrowseResponse,
+    EnterpriseMembershipUpdateRequest,
+    EnterprisePolicyPatchRequest,
+    IntegrationsStatusResponse,
+    OpsDashboardResponse,
+)
 from app.services.auth import AuthService
+from app.services.admin_enterprise import AdminEnterpriseService
+from app.services.admin_search import AdminSearchService
 from app.services.ops import ops_telemetry
+from app.services.tools.integrations import ExternalIntegrationTool
 from app.services.usage import UsageAccountingService
 
 router = APIRouter()
 settings = get_settings()
 auth_service = AuthService()
 usage_service = UsageAccountingService()
+admin_search_service = AdminSearchService()
+admin_enterprise_service = AdminEnterpriseService()
+integration_tool = ExternalIntegrationTool()
 
 
 @router.get("/ops", response_model=OpsDashboardResponse)
@@ -187,4 +201,250 @@ async def ops_dashboard(
             ],
             "recent_alerts": telemetry["recent_alerts"],
         },
+    )
+
+
+@router.get("/search", response_model=AdminSearchResponse)
+async def admin_search(
+    q: str = Query(..., min_length=1, max_length=240),
+    workspace_id: UUID | None = Query(default=None),
+    limit: int = Query(default=40, ge=1, le=100),
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> AdminSearchResponse:
+    accessible_workspaces = await auth_service.list_workspace_access(session, context.user.id)
+    accessible_map = {workspace.workspace_id: workspace for workspace in accessible_workspaces}
+
+    if workspace_id is not None:
+        if context.user.role != "owner":
+            await auth_service.assert_workspace_access(
+                session,
+                user_id=context.user.id,
+                workspace_id=workspace_id,
+                min_role="admin",
+            )
+        elif workspace_id not in accessible_map:
+            raise HTTPException(status_code=403, detail="Workspace access denied.")
+    elif context.user.role != "owner":
+        raise HTTPException(status_code=403, detail="Owner access is required for global admin search.")
+
+    scope_workspace_id = workspace_id if workspace_id in accessible_map else None
+    payload = await admin_search_service.search(
+        session,
+        query=q,
+        accessible_workspaces=accessible_workspaces,
+        workspace_id=scope_workspace_id,
+        limit=limit,
+    )
+    return AdminSearchResponse(**payload)
+
+
+@router.get("/enterprise", response_model=EnterpriseAdminResponse)
+async def enterprise_admin(
+    workspace_id: UUID = Query(...),
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> EnterpriseAdminResponse:
+    await auth_service.assert_workspace_access(
+        session,
+        user_id=context.user.id,
+        workspace_id=workspace_id,
+        min_role="admin",
+    )
+    payload = await admin_enterprise_service.enterprise_snapshot(
+        session,
+        workspace_id=workspace_id,
+    )
+    return EnterpriseAdminResponse(**payload)
+
+
+@router.patch("/enterprise/policies", response_model=EnterpriseAdminResponse)
+async def update_enterprise_policies(
+    payload: EnterprisePolicyPatchRequest,
+    workspace_id: UUID = Query(...),
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> EnterpriseAdminResponse:
+    membership = await auth_service.assert_workspace_access(
+        session,
+        user_id=context.user.id,
+        workspace_id=workspace_id,
+        min_role="admin",
+    )
+    workspace = await session.get(Workspace, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+
+    patch: dict[str, object] = {}
+    sso_patch: dict[str, object] = {}
+    rbac_patch: dict[str, object] = {}
+    quotas_patch: dict[str, object] = {}
+
+    if payload.sso_enforced is not None:
+        sso_patch["enforced"] = payload.sso_enforced
+    if payload.password_login_allowed is not None:
+        sso_patch["password_login_allowed"] = payload.password_login_allowed
+    if payload.preferred_provider is not None:
+        sso_patch["preferred_provider"] = payload.preferred_provider
+    if payload.allowed_sso_providers is not None:
+        sso_patch["allowed_providers"] = payload.allowed_sso_providers
+    if payload.domain_allowlist is not None:
+        sso_patch["domain_allowlist"] = payload.domain_allowlist
+
+    if payload.invite_policy is not None:
+        rbac_patch["invite_policy"] = payload.invite_policy
+    if payload.default_role is not None:
+        rbac_patch["default_role"] = payload.default_role
+
+    quota_map = {
+        "projects": payload.project_quota,
+        "threads": payload.thread_quota,
+        "documents": payload.document_quota,
+        "artifacts": payload.artifact_quota,
+        "automations": payload.automation_quota,
+        "monthly_cost_cap_usd": payload.monthly_cost_cap_usd,
+        "monthly_token_cap": payload.monthly_token_cap,
+        "soft_enforcement": payload.soft_enforcement,
+        "billing_alert_thresholds": payload.billing_alert_thresholds,
+    }
+    quotas_patch.update({key: value for key, value in quota_map.items() if value is not None})
+
+    if sso_patch:
+        patch["sso"] = sso_patch
+    if rbac_patch:
+        patch["rbac"] = rbac_patch
+    if quotas_patch:
+        patch["quotas"] = quotas_patch
+
+    normalized_policy = await admin_enterprise_service.update_policy(
+        session,
+        workspace=workspace,
+        patch=patch,
+    )
+    session.add(
+        AuditLog(
+            actor_id=context.user.id,
+            workspace_id=workspace_id,
+            action="workspace.enterprise_policy.updated",
+            resource_type="workspace",
+            resource_id=str(workspace_id),
+            details={
+                "actor_role": membership.role,
+                "patch": patch,
+                "normalized_policy": normalized_policy,
+            },
+        )
+    )
+    await session.commit()
+    snapshot = await admin_enterprise_service.enterprise_snapshot(session, workspace_id=workspace_id)
+    return EnterpriseAdminResponse(**snapshot)
+
+
+@router.patch("/memberships/{membership_id}", response_model=EnterpriseAdminResponse)
+async def update_workspace_membership(
+    membership_id: UUID,
+    payload: EnterpriseMembershipUpdateRequest,
+    workspace_id: UUID = Query(...),
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> EnterpriseAdminResponse:
+    actor_membership = await auth_service.assert_workspace_access(
+        session,
+        user_id=context.user.id,
+        workspace_id=workspace_id,
+        min_role="admin",
+    )
+    result = await session.execute(
+        select(WorkspaceMembership).where(
+            WorkspaceMembership.id == membership_id,
+            WorkspaceMembership.workspace_id == workspace_id,
+        )
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Workspace membership not found.")
+    if membership.user_id == context.user.id:
+        raise HTTPException(status_code=400, detail="Use a separate session to change your own workspace role.")
+    if actor_membership.role != "owner" and (
+        membership.role == "owner" or payload.role == "owner"
+    ):
+        raise HTTPException(status_code=403, detail="Only owners can manage owner memberships.")
+
+    changed: dict[str, object] = {}
+    if payload.role is not None and payload.role != membership.role:
+        changed["role"] = {"from": membership.role, "to": payload.role}
+        membership.role = payload.role
+    if payload.status is not None and payload.status != membership.status:
+        changed["status"] = {"from": membership.status, "to": payload.status}
+        membership.status = payload.status
+    if not changed:
+        raise HTTPException(status_code=400, detail="No membership changes were provided.")
+
+    session.add(
+        AuditLog(
+            actor_id=context.user.id,
+            workspace_id=workspace_id,
+            action="workspace.membership.updated",
+            resource_type="workspace_membership",
+            resource_id=str(membership.id),
+            details={
+                "workspace_role": actor_membership.role,
+                "changed": changed,
+                "target_user_id": str(membership.user_id),
+            },
+        )
+    )
+    await session.commit()
+    snapshot = await admin_enterprise_service.enterprise_snapshot(session, workspace_id=workspace_id)
+    return EnterpriseAdminResponse(**snapshot)
+
+
+@router.get("/audit", response_model=EnterpriseAuditBrowseResponse)
+async def browse_workspace_audit(
+    workspace_id: UUID = Query(...),
+    action: str | None = Query(default=None, min_length=1, max_length=255),
+    resource_type: str | None = Query(default=None, min_length=1, max_length=128),
+    actor_id: UUID | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> EnterpriseAuditBrowseResponse:
+    await auth_service.assert_workspace_access(
+        session,
+        user_id=context.user.id,
+        workspace_id=workspace_id,
+        min_role="admin",
+    )
+    payload = await admin_enterprise_service.browse_audit(
+        session,
+        workspace_id=workspace_id,
+        action=action,
+        resource_type=resource_type,
+        actor_id=actor_id,
+        limit=limit,
+    )
+    return EnterpriseAuditBrowseResponse(**payload)
+
+
+@router.get("/integrations", response_model=IntegrationsStatusResponse)
+async def integrations_status(
+    workspace_id: UUID | None = Query(default=None),
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> IntegrationsStatusResponse:
+    if workspace_id is not None:
+        await auth_service.assert_workspace_access(
+            session,
+            user_id=context.user.id,
+            workspace_id=workspace_id,
+            min_role="admin",
+        )
+    elif context.user.role != "owner":
+        raise HTTPException(status_code=403, detail="Owner access is required for global integration visibility.")
+
+    status_payload = await integration_tool.integration_status()
+    return IntegrationsStatusResponse(
+        generated_at=utc_now(),
+        capabilities=status_payload.get("capabilities", {}),
+        providers=status_payload.get("providers", []),
     )

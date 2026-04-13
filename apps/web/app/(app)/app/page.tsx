@@ -9,8 +9,13 @@ import {
   getWorkspaceAutomations,
   getWorkspaceKnowledgeHealth
 } from "@/lib/api";
+import { resolveActiveWorkspace } from "@/lib/workspace";
 
-export default async function AppHomePage() {
+export default async function AppHomePage({
+  searchParams
+}: {
+  searchParams?: Promise<{ workspace?: string }>;
+}) {
   const session = await getCurrentSession();
   if (!session?.workspaces?.length) {
     if (await hasSessionCookie()) {
@@ -26,7 +31,10 @@ export default async function AppHomePage() {
     redirect("/signin");
   }
 
-  const workspaceId = session.workspaces[0].workspace_id;
+  const params = searchParams ? await searchParams : undefined;
+  const activeWorkspace = resolveActiveWorkspace(session, params?.workspace);
+  const workspace = activeWorkspace ?? session.workspaces[0];
+  const workspaceId = workspace.workspace_id;
   const [runtime, health, automations, ops] = await Promise.all([
     getChatWorkspace(workspaceId),
     getWorkspaceKnowledgeHealth(workspaceId),
@@ -36,6 +44,7 @@ export default async function AppHomePage() {
 
   return (
     <OverviewPanel
+      workspaceId={workspaceId}
       threadCount={runtime?.threads.length ?? 0}
       runCount={runtime?.runs.length ?? 0}
       knowledgeChunks={health?.total_chunks ?? 0}

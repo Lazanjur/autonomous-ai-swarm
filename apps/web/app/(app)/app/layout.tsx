@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { AppSidebar } from "@/components/app-shell/sidebar";
-import { getCurrentSession } from "@/lib/api";
+import { getCurrentSession, getTaskRail } from "@/lib/api";
 
 export default async function AppLayout({
   children
@@ -29,12 +29,20 @@ export default async function AppLayout({
     );
   }
 
+  const initialTaskRailWorkspaceId =
+    session.workspaces.length === 1 ? session.workspaces[0]?.workspace_id : null;
+  const taskRail = initialTaskRailWorkspaceId ? await getTaskRail(initialTaskRailWorkspaceId) : null;
+
   return (
-    <main className="mx-auto flex min-h-screen max-w-[1600px] gap-6 px-4 py-4 lg:px-6">
-      <div className="w-full max-w-[300px]">
-        <AppSidebar session={session} />
+    <main className="mx-auto max-w-[1820px] px-3 py-3 lg:px-5 lg:py-5">
+      <div className="app-shell-frame p-3 lg:p-4">
+        <div className="app-shell-grid grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+          <div className="xl:sticky xl:top-5 xl:self-start">
+            <AppSidebar session={session} taskRail={taskRail} />
+          </div>
+          <div className="shell-main p-2 lg:p-3">{children}</div>
+        </div>
       </div>
-      <div className="flex-1">{children}</div>
     </main>
   );
 }

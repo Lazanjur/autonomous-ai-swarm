@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import subprocess
-import tempfile
+import asyncio
+import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
-
 from app.core.config import get_settings
 from app.services.tools.common import ToolRuntimeBase
 
@@ -44,6 +44,8 @@ class DockerSandboxExecutor(ToolRuntimeBase):
         *,
         files: dict[str, str | bytes] | None = None,
         timeout_seconds: int = 20,
+        event_handler: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        event_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         request = {
             "timeout_seconds": timeout_seconds,
@@ -52,20 +54,64 @@ class DockerSandboxExecutor(ToolRuntimeBase):
         }
         audit, started_at = self.start_audit("execute_python", request)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            workspace_path = Path(temp_dir)
+        workspace_path = self._prepare_workspace(audit["run_id"])
+        try:
             script_path = workspace_path / "task.py"
             script_path.write_text(code, encoding="utf-8")
             self._seed_files(workspace_path, files or {})
             command = self.build_command(workspace_path, script_path.name)
+            session_id = audit["run_id"]
+            session_payload_base = {
+                **(event_context or {}),
+                "session_id": session_id,
+                "session_kind": "terminal",
+                "tool": self.name,
+                "command": command,
+            }
             try:
-                completed = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds,
-                    check=False,
+                process = await self._create_process(command)
+                await self._emit(
+                    event_handler,
+                    "computer.session.started",
+                    {
+                        **session_payload_base,
+                        "status": "running",
+                    },
                 )
+                stdout_buffer: list[str] = []
+                stderr_buffer: list[str] = []
+                stdout_task = asyncio.create_task(
+                    self._stream_pipe(
+                        pipe=process.stdout,
+                        stream_name="stdout",
+                        buffer=stdout_buffer,
+                        event_handler=event_handler,
+                        event_payload_base=session_payload_base,
+                    )
+                )
+                stderr_task = asyncio.create_task(
+                    self._stream_pipe(
+                        pipe=process.stderr,
+                        stream_name="stderr",
+                        buffer=stderr_buffer,
+                        event_handler=event_handler,
+                        event_payload_base=session_payload_base,
+                    )
+                )
+
+                timed_out = False
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+                    raw_returncode = process.returncode
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    process.kill()
+                    await process.wait()
+                    raw_returncode = process.returncode
+
+                stdout = await stdout_task
+                stderr = await stderr_task
+                returncode = 124 if timed_out else (raw_returncode if raw_returncode is not None else 1)
                 artifacts = self._capture_workspace_artifacts(
                     workspace_path,
                     run_id=audit["run_id"],
@@ -73,27 +119,42 @@ class DockerSandboxExecutor(ToolRuntimeBase):
                 )
                 payload = {
                     "command": command,
-                    "stdout": completed.stdout,
-                    "stderr": completed.stderr,
-                    "returncode": completed.returncode,
-                    "timed_out": False,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "returncode": returncode,
+                    "timed_out": timed_out,
                     "artifacts": artifacts,
+                    "session_events_emitted": True,
                 }
+                status = "completed" if returncode == 0 and not timed_out else "failed"
                 audit = self.finalize_audit(
                     audit,
                     started_at,
-                    status="completed" if completed.returncode == 0 else "failed",
+                    status=status,
                     response={
-                        "returncode": completed.returncode,
-                        "stdout_preview": completed.stdout[:240],
-                        "stderr_preview": completed.stderr[:240],
+                        "returncode": returncode,
+                        "stdout_preview": stdout[:240],
+                        "stderr_preview": stderr[:240],
                     },
                     artifacts=artifacts,
-                    error=completed.stderr[:500] if completed.returncode != 0 else None,
+                    error=stderr[:500] if status != "completed" else None,
+                )
+                await self._emit(
+                    event_handler,
+                    "computer.session.completed" if status == "completed" else "computer.session.failed",
+                    {
+                        **session_payload_base,
+                        "status": status,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "returncode": returncode,
+                        "timed_out": timed_out,
+                        "artifacts": artifacts,
+                    },
                 )
                 return self.result(
                     operation="execute_python",
-                    status="completed" if completed.returncode == 0 else "failed",
+                    status=status,
                     payload=payload,
                     audit=audit,
                 )
@@ -106,6 +167,19 @@ class DockerSandboxExecutor(ToolRuntimeBase):
                     response={"returncode": 127},
                     error=error,
                 )
+                await self._emit(
+                    event_handler,
+                    "computer.session.failed",
+                    {
+                        **session_payload_base,
+                        "status": "failed",
+                        "stdout": "",
+                        "stderr": error,
+                        "returncode": 127,
+                        "timed_out": False,
+                        "artifacts": [],
+                    },
+                )
                 return self.result(
                     operation="execute_python",
                     status="failed",
@@ -116,23 +190,31 @@ class DockerSandboxExecutor(ToolRuntimeBase):
                         "returncode": 127,
                         "timed_out": False,
                         "artifacts": [],
+                        "session_events_emitted": True,
                     },
                     audit=audit,
                 )
-            except subprocess.TimeoutExpired:
-                artifacts = self._capture_workspace_artifacts(
-                    workspace_path,
-                    run_id=audit["run_id"],
-                    exclude={script_path.name, *request["input_files"]},
-                )
-                error = "Execution timed out."
+            except Exception as exc:
+                error = f"{exc.__class__.__name__}: {exc}"
                 audit = self.finalize_audit(
                     audit,
                     started_at,
                     status="failed",
-                    response={"returncode": 124},
-                    artifacts=artifacts,
+                    response={"returncode": 1},
                     error=error,
+                )
+                await self._emit(
+                    event_handler,
+                    "computer.session.failed",
+                    {
+                        **session_payload_base,
+                        "status": "failed",
+                        "stdout": "",
+                        "stderr": error,
+                        "returncode": 1,
+                        "timed_out": False,
+                        "artifacts": [],
+                    },
                 )
                 return self.result(
                     operation="execute_python",
@@ -141,12 +223,75 @@ class DockerSandboxExecutor(ToolRuntimeBase):
                         "command": command,
                         "stdout": "",
                         "stderr": error,
-                        "returncode": 124,
-                        "timed_out": True,
-                        "artifacts": artifacts,
+                        "returncode": 1,
+                        "timed_out": False,
+                        "artifacts": [],
+                        "session_events_emitted": True,
                     },
                     audit=audit,
                 )
+        finally:
+            shutil.rmtree(workspace_path, ignore_errors=True)
+
+    def _prepare_workspace(self, run_id: str) -> Path:
+        workspace_root = (Path.cwd() / "var" / "sandbox-runtime" / run_id).resolve()
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        return workspace_root
+
+    async def _create_process(self, command: list[str]):
+        return await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    async def _stream_pipe(
+        self,
+        *,
+        pipe,
+        stream_name: str,
+        buffer: list[str],
+        event_handler: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+        event_payload_base: dict[str, Any],
+    ) -> str:
+        if pipe is None:
+            return ""
+
+        chunk_index = 0
+        while True:
+            chunk = await pipe.read(512)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", errors="replace")
+            buffer.append(text)
+            chunk_index += 1
+            await self._emit(
+                event_handler,
+                "computer.session.updated",
+                {
+                    **event_payload_base,
+                    "status": "running",
+                    "phase": "stream",
+                    "stream": stream_name,
+                    "chunk_index": chunk_index,
+                    "stdout_delta": text if stream_name == "stdout" else None,
+                    "stderr_delta": text if stream_name == "stderr" else None,
+                },
+            )
+            await self._emit(
+                event_handler,
+                f"terminal.{stream_name}",
+                {
+                    **event_payload_base,
+                    "status": "running",
+                    "phase": "stream",
+                    "stream": stream_name,
+                    "chunk_index": chunk_index,
+                    "stdout_delta": text if stream_name == "stdout" else None,
+                    "stderr_delta": text if stream_name == "stderr" else None,
+                },
+            )
+        return "".join(buffer)
 
     def _seed_files(self, workspace_path: Path, files: dict[str, str | bytes]) -> None:
         for relative_path, content in files.items():
@@ -187,3 +332,12 @@ class DockerSandboxExecutor(ToolRuntimeBase):
                 }
             )
         return artifacts
+
+    async def _emit(
+        self,
+        event_handler: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+        event: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if event_handler is not None:
+            await event_handler(event, payload)

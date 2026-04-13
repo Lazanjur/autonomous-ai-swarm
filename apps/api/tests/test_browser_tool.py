@@ -197,3 +197,33 @@ async def test_execute_skips_actions_without_approval(monkeypatch):
     assert result["executed_actions"] == []
     assert result["skipped_actions"][0]["kind"] == "click"
     assert any("skipped" in warning.lower() for warning in result["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_execute_emits_browser_session_events(monkeypatch):
+    storage = FakeStorage()
+    page = FakePage()
+    tool = BrowserAutomationTool(storage=storage)
+    monkeypatch.setattr(tool, "_playwright_factory", lambda: FakePlaywrightManager(page))
+
+    events: list[tuple[str, dict]] = []
+
+    async def capture(event: str, payload: dict) -> None:
+        events.append((event, payload))
+
+    result = await tool.execute_with_events(
+        "Review https://example.com and capture the visible content.",
+        event_handler=capture,
+        event_context={"agent_key": "vision_automation", "step_index": 0},
+    )
+
+    assert result["status"] == "completed"
+    assert [name for name, _ in events] == [
+        "computer.session.started",
+        "computer.session.updated",
+        "browser.snapshot",
+        "computer.session.completed",
+    ]
+    assert events[2][1]["session_kind"] == "browser"
+    assert events[2][1]["artifacts"]["screenshot"]["storage_key"].endswith("page.png")
+    assert events[-1][1]["session_kind"] == "browser"

@@ -10,7 +10,11 @@
     "build": "npm run build --workspace web",
     "lint": "npm run lint --workspace web",
     "typecheck": "npm run typecheck --workspace web",
-    "format": "npm run format --workspace web"
+    "format": "npm run format --workspace web",
+    "test:e2e": "npm run test:e2e --workspace web"
+  },
+  "devDependencies": {
+    "next": "^15.1.0"
   },
   "engines": {
     "node": ">=20.11.0"

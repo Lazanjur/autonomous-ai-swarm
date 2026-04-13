@@ -58,6 +58,15 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up --build 
 
 The production stack places Caddy in front of the app for HTTPS, routes `/` and `/app` to the web service, and routes `/api/v1`, `/docs`, and `/openapi.json` to the FastAPI backend.
 
+Production hardening is now included for:
+
+- production posture validation before launch
+- Prometheus metrics scraping
+- Docker log aggregation through Vector
+- backup creation and retention
+- watchdog posture checks with optional webhook alerts
+- structured secret-rotation plans
+
 ## Demo auth
 
 Demo auth is intended for local and non-production environments.
@@ -133,6 +142,10 @@ python -m playwright install chromium
 - Each execution is persisted with trigger source, attempt number, run/thread linkage, status, summary, and error details
 - Scheduled workflows can require approval, in which case the scheduler moves them into an `awaiting_approval` state until a manual run is approved
 - Manual runs reuse the chat runtime and persist into a dedicated thread per automation once the first run creates it
+- Retry scheduling now uses a dedicated worker queue path with backoff timing, duplicate-execution protection, and retry observability in execution metadata
+- Automation executions now persist a structured event timeline, approval state, retry state, and queued-notification history for the dashboard
+- Notification policies can target `failed`, `completed`, `retry_scheduled`, `approval_requested`, and `rejected` execution outcomes
+- Reusable browser/computer task templates can now prefill automation definitions so recurring workflows start from productized operating patterns instead of a blank prompt
 
 ## Local development
 
@@ -143,6 +156,18 @@ cd apps/web
 npm install
 npm run dev
 ```
+
+### Web verification
+
+```bash
+cd apps/web
+npm run typecheck
+npx playwright install chromium
+npm run test:e2e
+```
+
+- The Playwright suite runs the Next.js app in a deterministic E2E mock mode so the browser tests can verify the real shell, auth flow, task workspace, workspace switching, and key product surfaces without depending on the API runtime.
+- CI now runs `typecheck`, `build`, and the Playwright suite for the web workspace.
 
 ### API
 
@@ -160,11 +185,20 @@ uvicorn app.main:app --reload
 - `SupervisorOrchestrator` decomposes requests into specialized agent tasks.
 - Live chat runs stream plan creation, execution batches, per-step status, escalation, and final synthesis over SSE.
 - The chat runtime now uses real persisted threads, thread-scoped run history, URL-addressable thread selection, and live workspace refresh after each run.
+- The chat workspace now includes reusable browser/computer task templates that prefill the operating brief and steer the operator pane toward the recommended mode.
 - Specialized agents use fast/slow Qwen model pairs.
 - `ProviderRouter` abstracts model providers and supports Alibaba's OpenAI-compatible endpoint.
 - `KnowledgeService` handles ingestion, chunking, and retrieval metadata.
 - `ToolRegistry` manages safe tool exposure for web research, code execution, file access, and browser automation.
-- Tool execution now includes filesystem policies, sandbox artifact capture, report generation, notification outboxes, and durable queued background jobs.
+- Tool execution now includes filesystem policies, sandbox artifact capture, report generation, notification outboxes, durable queued background jobs, and approval-aware external integrations.
+
+## External integrations
+
+- The external integration layer now supports live delivery for email, Slack, webhooks, calendar events, and generic REST endpoints when the corresponding provider credentials are configured.
+- Email delivery supports SMTP or Resend.
+- Slack delivery supports incoming webhooks or a bot token using `chat.postMessage`.
+- Calendar delivery supports Google Calendar or Microsoft Graph.
+- All live outbound integrations remain gated behind explicit approval language and continue to persist durable outbox/audit records even when delivery is performed.
 
 ## Security notes
 
@@ -173,6 +207,9 @@ uvicorn app.main:app --reload
 - Sensitive actions use approval states.
 - Sandboxed execution is isolated through Docker.
 - Retrieved content is normalized and tagged with provenance metadata.
+- Production readiness now fails closed when domain, secret, demo-mode, or provider-fallback posture is invalid.
+- Internal metrics are available for scrapers, while public metrics paths are blocked at the edge.
+- Backup, watchdog, and secret-rotation scripts live under `infrastructure/scripts`.
 
 ## Included demo scope
 

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import AuthContext, require_auth_context
 from app.db.session import get_session
 from app.schemas.automations import (
+    AutomationApprovalRequest,
     AutomationCreateRequest,
     AutomationDashboardRead,
     AutomationExecutionRead,
@@ -141,6 +142,46 @@ async def run_automation(
         actor_id=context.user.id,
         force=payload.force,
     )
+    return AutomationExecutionRead.model_validate(execution)
+
+
+@router.post("/{automation_id}/approve", response_model=AutomationExecutionRead)
+async def approve_automation(
+    automation_id: UUID,
+    payload: AutomationApprovalRequest,
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> AutomationExecutionRead:
+    automation = await _get_authorized_automation(session, context, automation_id, min_role="member")
+    try:
+        execution = await automation_service.approve_pending_automation(
+            session,
+            automation,
+            actor_id=context.user.id,
+            decision_note=payload.decision_note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AutomationExecutionRead.model_validate(execution)
+
+
+@router.post("/{automation_id}/reject", response_model=AutomationExecutionRead)
+async def reject_automation(
+    automation_id: UUID,
+    payload: AutomationApprovalRequest,
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> AutomationExecutionRead:
+    automation = await _get_authorized_automation(session, context, automation_id, min_role="member")
+    try:
+        execution = await automation_service.reject_pending_automation(
+            session,
+            automation,
+            actor_id=context.user.id,
+            decision_note=payload.decision_note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return AutomationExecutionRead.model_validate(execution)
 
 

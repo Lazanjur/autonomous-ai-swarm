@@ -99,8 +99,8 @@ class KnowledgeService:
             metadata={"source_type": parsed.source_type},
         )
         artifacts.append(source_artifact)
-        document.metadata = {
-            **document.metadata,
+        document.metadata_ = {
+            **document.metadata_,
             "source_artifact_id": str(source_artifact.id),
             "original_filename": filename,
         }
@@ -112,8 +112,8 @@ class KnowledgeService:
                 include_metadata=True,
             )
             artifacts.append(export_artifact)
-            document.metadata = {
-                **document.metadata,
+            document.metadata_ = {
+                **document.metadata_,
                 "default_export_artifact_id": str(export_artifact.id),
             }
         await session.commit()
@@ -159,10 +159,17 @@ class KnowledgeService:
         query_embedding_provider: str | None = None
         query_embedding_fallback = False
         try:
-            query_vector, query_embedding_provider, query_embedding_fallback = await self._embed_query(
-                query,
-                workspace_id=workspace_id,
-            )
+            try:
+                query_vector, query_embedding_provider, query_embedding_fallback = await self._embed_query(
+                    query,
+                    workspace_id=workspace_id,
+                )
+            except TypeError as exc:
+                if "workspace_id" not in str(exc):
+                    raise
+                query_vector, query_embedding_provider, query_embedding_fallback = await self._embed_query(
+                    query
+                )
         except Exception as exc:
             query_vector = None
             fallback_reason = serialize_fallback_reason("query_embedding_unavailable", exc)
@@ -255,7 +262,7 @@ class KnowledgeService:
             )
             for index, chunk in enumerate(chunks):
                 chunk.embedding = vectors[index] if index < len(vectors) else None
-                chunk.metadata = {**chunk.metadata, "embedding_backfilled": True}
+                chunk.metadata_ = {**chunk.metadata_, "embedding_backfilled": True}
             await session.commit()
             updated += len(chunks)
             batches += 1
@@ -283,12 +290,12 @@ class KnowledgeService:
         untagged_documents = 0
         for document in documents:
             trust_scores.append(self._document_trust_score(document))
-            tags = [normalize_tag(str(tag)) for tag in document.metadata.get("tags", []) if str(tag).strip()]
+            tags = [normalize_tag(str(tag)) for tag in document.metadata_.get("tags", []) if str(tag).strip()]
             if tags:
                 tag_counts.update(tags)
             else:
                 untagged_documents += 1
-            fingerprint = document.metadata.get("content_fingerprint")
+            fingerprint = document.metadata_.get("content_fingerprint")
             if fingerprint:
                 fingerprint_counts[str(fingerprint)] += 1
         embedded_chunks = sum(1 for chunk in chunks if chunk.embedding is not None)
@@ -355,8 +362,8 @@ class KnowledgeService:
         session.add(document)
         await session.flush()
         if is_duplicate:
-            document.metadata = {
-                **document.metadata,
+            document.metadata_ = {
+                **document.metadata_,
                 "chunk_count": 0,
                 "deduplicated_chunk_count": 0,
                 "indexing_skipped": True,
@@ -398,8 +405,8 @@ class KnowledgeService:
                 )
             )
 
-        document.metadata = {
-            **document.metadata,
+        document.metadata_ = {
+            **document.metadata_,
             "chunk_count": len(unique_chunks),
             "deduplicated_chunk_count": deduplicated_chunk_count,
             "indexing_skipped": False,
@@ -454,7 +461,7 @@ class KnowledgeService:
             select(Document).where(Document.workspace_id == workspace_id).order_by(desc(Document.created_at))
         )
         for document in result.scalars().all():
-            if document.status != "duplicate" and document.metadata.get("content_fingerprint") == content_fingerprint:
+            if document.status != "duplicate" and document.metadata_.get("content_fingerprint") == content_fingerprint:
                 return document
         return None
 
@@ -587,8 +594,9 @@ class KnowledgeService:
         return self._select_ranked_results(ranked, filters), filtered_candidates
 
     def _document_matches_filters(self, document: Document, filters: RetrievalFilters) -> bool:
+        metadata = self._document_metadata(document)
         if not filters.include_duplicates and (
-            document.status == "duplicate" or bool(document.metadata.get("is_duplicate"))
+            document.status == "duplicate" or bool(metadata.get("is_duplicate"))
         ):
             return False
         if filters.source_types and document.source_type not in filters.source_types:
@@ -601,7 +609,7 @@ class KnowledgeService:
             return False
         if filters.tags:
             document_tags = {
-                normalize_tag(str(tag)) for tag in document.metadata.get("tags", []) if str(tag).strip()
+                normalize_tag(str(tag)) for tag in metadata.get("tags", []) if str(tag).strip()
             }
             if not set(filters.tags).issubset(document_tags):
                 return False
@@ -631,7 +639,7 @@ class KnowledgeService:
             "content": chunk.content,
             "chunk_index": chunk.chunk_index,
             "token_estimate": chunk.token_estimate,
-            "metadata": chunk.metadata,
+            "metadata": chunk.metadata_,
             "score": rerank_score(base_score, trust_score, freshness_score),
             "base_score": round(float(base_score), 4),
             "keyword_score": round(float(keyword_score_value), 4),
@@ -639,8 +647,8 @@ class KnowledgeService:
             "trust_score": trust_score,
             "freshness_score": freshness_score,
             "overlap_terms": overlap_terms,
-            "is_duplicate": document.status == "duplicate" or bool(document.metadata.get("is_duplicate")),
-            "duplicate_of_document_id": document.metadata.get("duplicate_of_document_id"),
+            "is_duplicate": document.status == "duplicate" or bool(document.metadata_.get("is_duplicate")),
+            "duplicate_of_document_id": document.metadata_.get("duplicate_of_document_id"),
         }
 
     def _select_ranked_results(self, ranked: list[dict], filters: RetrievalFilters) -> list[dict]:
@@ -667,14 +675,21 @@ class KnowledgeService:
         return selected
 
     def _document_trust_score(self, document: Document) -> float:
-        configured = document.metadata.get("trust_score")
+        configured = self._document_metadata(document).get("trust_score")
         if isinstance(configured, (int, float)):
             return round(float(configured), 4)
         return self._derive_trust_score(
             source_type=document.source_type,
-            source_uri=document.source_uri,
-            mime_type=document.mime_type,
+            source_uri=getattr(document, "source_uri", None),
+            mime_type=getattr(document, "mime_type", None),
         )
+
+    def _document_metadata(self, document: Document | Any) -> dict[str, Any]:
+        metadata = getattr(document, "metadata_", None)
+        if isinstance(metadata, dict):
+            return metadata
+        metadata = getattr(document, "metadata", None)
+        return metadata if isinstance(metadata, dict) else {}
 
     def _document_freshness_score(self, document: Document) -> float:
         age_days = max((utc_now() - document.created_at).total_seconds() / 86400, 0.0)

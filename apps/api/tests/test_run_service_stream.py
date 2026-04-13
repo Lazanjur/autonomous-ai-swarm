@@ -29,12 +29,91 @@ async def test_stream_run_emits_live_batch_and_step_events(monkeypatch):
     async def fake_start_run(session, *, payload, thread):
         return run
 
-    async def fake_execute(message, event_handler=None):
+    async def fake_execute(message, metadata=None, event_handler=None):
         await event_handler("plan", {"plan": [{"key": "coding", "plan_index": 0}]})
         await event_handler("batches", {"batches": [["coding"]]})
         await event_handler(
             "batch.started",
             {"batch_index": 0, "tasks": ["coding"], "statuses": {"coding": "queued"}},
+        )
+        await event_handler(
+            "tool.started",
+            {
+                "agent_key": "coding",
+                "agent_name": "Coding Agent",
+                "step_index": 0,
+                "batch_index": 0,
+                "tool": "python_sandbox",
+                "status": "running",
+            },
+        )
+        await event_handler(
+            "tool.output",
+            {
+                "agent_key": "coding",
+                "agent_name": "Coding Agent",
+                "step_index": 0,
+                "batch_index": 0,
+                "tool": "python_sandbox",
+                "operation": "execute_python",
+                "status": "running",
+                "summary": "Streaming terminal output.",
+                "output_preview": "ready",
+                "artifacts": [],
+            },
+        )
+        await event_handler(
+            "terminal.stdout",
+            {
+                "agent_key": "coding",
+                "agent_name": "Coding Agent",
+                "step_index": 0,
+                "batch_index": 0,
+                "session_id": "sandbox-session",
+                "session_kind": "terminal",
+                "tool": "python_sandbox",
+                "status": "running",
+                "stream": "stdout",
+                "stdout_delta": "ready\n",
+            },
+        )
+        await event_handler(
+            "computer.session.completed",
+            {
+                "agent_key": "coding",
+                "agent_name": "Coding Agent",
+                "step_index": 0,
+                "batch_index": 0,
+                "session_id": "sandbox-session",
+                "session_kind": "terminal",
+                "tool": "python_sandbox",
+                "status": "completed",
+                "command": ["python", "task.py"],
+                "stdout": "ready",
+                "stderr": "",
+                "returncode": 0,
+                "artifacts": [],
+            },
+        )
+        await event_handler(
+            "browser.snapshot",
+            {
+                "agent_key": "coding",
+                "agent_name": "Coding Agent",
+                "step_index": 0,
+                "batch_index": 0,
+                "session_id": "browser-session",
+                "session_kind": "browser",
+                "tool": "browser_automation",
+                "status": "running",
+                "target_url": "https://example.com",
+                "final_url": "https://example.com",
+                "page_title": "Example",
+                "headings": ["Example"],
+                "links": [],
+                "extracted_text": "Snapshot ready",
+                "artifacts": [],
+            },
         )
         await event_handler(
             "step.started",
@@ -100,6 +179,11 @@ async def test_stream_run_emits_live_batch_and_step_events(monkeypatch):
         "plan",
         "batches",
         "batch.started",
+        "tool.started",
+        "tool.output",
+        "terminal.stdout",
+        "computer.session.completed",
+        "browser.snapshot",
         "step.started",
         "step.completed",
         "batch.completed",

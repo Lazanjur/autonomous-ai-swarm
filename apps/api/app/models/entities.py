@@ -17,11 +17,14 @@ class BaseRecord(SQLModel):
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     created_at: datetime = Field(
         default_factory=utc_now,
-        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+        sa_type=DateTime(timezone=True),
+        nullable=False,
+        index=True,
     )
     updated_at: datetime = Field(
         default_factory=utc_now,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
+        sa_type=DateTime(timezone=True),
+        nullable=False,
     )
 
 
@@ -45,6 +48,11 @@ class Workspace(BaseRecord, table=True):
     name: str = Field(sa_column=Column(String(255), nullable=False))
     slug: str = Field(sa_column=Column(String(255), nullable=False, unique=True, index=True))
     description: str | None = Field(default=None, sa_column=Column(Text))
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="metadata",
+        sa_column=Column("metadata", JSON, nullable=False),
+    )
 
 
 class WorkspaceMembership(BaseRecord, table=True):
@@ -59,6 +67,11 @@ class Project(BaseRecord, table=True):
     name: str = Field(sa_column=Column(String(255), nullable=False))
     description: str | None = Field(default=None, sa_column=Column(Text))
     status: str = Field(default="active", sa_column=Column(String(64), nullable=False))
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="metadata",
+        sa_column=Column("metadata", JSON, nullable=False),
+    )
 
 
 class ChatThread(BaseRecord, table=True):
@@ -66,7 +79,11 @@ class ChatThread(BaseRecord, table=True):
     project_id: UUID | None = Field(default=None, foreign_key="project.id")
     title: str = Field(sa_column=Column(String(255), nullable=False))
     status: str = Field(default="active", sa_column=Column(String(64), nullable=False))
-    metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="metadata",
+        sa_column=Column("metadata", JSON, nullable=False),
+    )
 
 
 class Run(BaseRecord, table=True):
@@ -86,7 +103,11 @@ class Message(BaseRecord, table=True):
     role: str = Field(sa_column=Column(String(32), nullable=False))
     content: str = Field(sa_column=Column(Text, nullable=False))
     citations: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
-    metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="metadata",
+        sa_column=Column("metadata", JSON, nullable=False),
+    )
 
 
 class RunStep(BaseRecord, table=True):
@@ -115,7 +136,11 @@ class Document(BaseRecord, table=True):
     mime_type: str | None = Field(default=None, sa_column=Column(String(255)))
     status: str = Field(default="processed", sa_column=Column(String(64), nullable=False))
     content_text: str = Field(sa_column=Column(Text, nullable=False))
-    metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="metadata",
+        sa_column=Column("metadata", JSON, nullable=False),
+    )
 
 
 class DocumentChunk(BaseRecord, table=True):
@@ -125,7 +150,11 @@ class DocumentChunk(BaseRecord, table=True):
     content: str = Field(sa_column=Column(Text, nullable=False))
     token_estimate: int = Field(default=0, sa_column=Column(Integer, nullable=False))
     embedding: list[float] | None = Field(default=None, sa_column=Column(Vector(1536), nullable=True))
-    metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="metadata",
+        sa_column=Column("metadata", JSON, nullable=False),
+    )
 
 
 class Artifact(BaseRecord, table=True):
@@ -135,7 +164,11 @@ class Artifact(BaseRecord, table=True):
     kind: str = Field(sa_column=Column(String(64), nullable=False))
     title: str = Field(sa_column=Column(String(255), nullable=False))
     storage_key: str = Field(sa_column=Column(String(1024), nullable=False))
-    metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="metadata",
+        sa_column=Column("metadata", JSON, nullable=False),
+    )
 
 
 class Automation(BaseRecord, table=True):
@@ -161,7 +194,11 @@ class AutomationExecution(BaseRecord, table=True):
     completed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
     error_message: str | None = Field(default=None, sa_column=Column(Text))
     result_summary: str | None = Field(default=None, sa_column=Column(Text))
-    metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="metadata",
+        sa_column=Column("metadata", JSON, nullable=False),
+    )
 
 
 class ProviderConfig(BaseRecord, table=True):

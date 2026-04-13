@@ -18,10 +18,12 @@ class Settings(BaseSettings):
 
     app_name: str = "Autonomous AI Swarm"
     app_env: str = Field(default="development", alias="APP_ENV")
+    app_domain: str | None = Field(default=None, alias="APP_DOMAIN")
     api_v1_prefix: str = "/api/v1"
     public_app_url: str = Field(default="http://localhost:3000", alias="PUBLIC_APP_URL")
     public_api_url: str = Field(default="http://localhost:8000", alias="PUBLIC_API_URL")
     debug: bool = False
+    metrics_enabled: bool = True
     secret_key: str = "change-me"
     access_token_expire_minutes: int = 480
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/autonomous_ai_swarm"
@@ -43,6 +45,10 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     rate_limit_burst_requests: int = 30
     request_telemetry_retention: int = 200
+    production_backup_max_age_hours: int = 30
+    secret_rotation_interval_days: int = 90
+    ssl_min_valid_days: int = 21
+    alert_webhook_url: str | None = None
     provider_budget_enforced: bool = True
     provider_budget_window_hours: int = 24
     provider_daily_cost_cap_usd: float = 25.0
@@ -61,6 +67,14 @@ class Settings(BaseSettings):
     automation_poll_interval_seconds: int = 20
     automation_default_retry_limit: int = 2
     automation_default_timeout_seconds: int = 900
+    automation_retry_backoff_seconds: int = 45
+    automation_notification_history_limit: int = 12
+    external_request_timeout_seconds: int = 15
+    orchestrator_tool_loop_enabled: bool = True
+    orchestrator_max_tool_iterations: int = 3
+    orchestrator_max_consecutive_tool_failures: int = 2
+    orchestrator_max_step_replans: int = 2
+    orchestrator_continue_until_done_min_validation: float = 0.68
     browser_enabled: bool = True
     browser_headless: bool = True
     browser_navigation_timeout_ms: int = 15000
@@ -69,6 +83,35 @@ class Settings(BaseSettings):
     browser_capture_html: bool = True
     browser_capture_text_chars: int = 4000
     browser_capture_max_links: int = 8
+
+    email_from_name: str = "Autonomous AI Swarm"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_use_tls: bool = False
+    smtp_starttls: bool = True
+    resend_api_key: str | None = None
+    resend_base_url: str = "https://api.resend.com"
+
+    slack_bot_token: str | None = None
+    slack_webhook_url: str | None = None
+    slack_api_base_url: str = "https://slack.com/api"
+
+    google_calendar_access_token: str | None = None
+    google_calendar_id: str = "primary"
+    google_calendar_base_url: str = "https://www.googleapis.com/calendar/v3"
+    microsoft_graph_access_token: str | None = None
+    microsoft_calendar_id: str = "primary"
+    microsoft_graph_base_url: str = "https://graph.microsoft.com/v1.0"
+
+    sso_google_client_id: str | None = None
+    sso_microsoft_client_id: str | None = None
+    sso_oidc_client_id: str | None = None
+    sso_oidc_issuer_url: str | None = None
+    sso_saml_entity_id: str | None = None
+    sso_saml_sso_url: str | None = None
 
     alibaba_api_key: str | None = Field(default=None, alias="ALIBABA_API_KEY")
     alibaba_api_host: str = Field(
@@ -107,7 +150,7 @@ class Settings(BaseSettings):
         alias="CORS_ORIGINS",
     )
     trusted_hosts: list[str] = Field(
-        default_factory=lambda: ["localhost", "127.0.0.1", "api"],
+        default_factory=lambda: ["localhost", "127.0.0.1", "api", "testserver"],
         alias="TRUSTED_HOSTS",
     )
 

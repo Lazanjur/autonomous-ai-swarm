@@ -1,0 +1,39 @@
+groups:
+  - name: swarm-production
+    rules:
+      - alert: SwarmProductionConfigInvalid
+        expr: swarm_production_config_valid == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Production configuration validation is failing"
+          description: "The API readiness posture checks are reporting invalid production configuration."
+
+      - alert: SwarmDatabaseUnavailable
+        expr: swarm_database_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Primary database probe is failing"
+          description: "The API cannot reach the database during health metrics collection."
+
+      - alert: SwarmBudgetUtilizationHigh
+        expr: swarm_budget_utilization > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Provider budget utilization is high"
+          description: "The model provider spend cap is above 85% of the configured window."
+
+      - alert: SwarmRecentAlertsPresent
+        expr: swarm_alerts_recent_total > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Recent operational alerts are present"
+          description: "The in-process ops telemetry ring buffer currently contains recent alerts."
+

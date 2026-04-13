@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Download,
@@ -24,6 +24,8 @@ type Props = {
   documents: KnowledgeDocument[];
   artifacts: Artifact[];
   health: KnowledgeHealth;
+  initialQuery?: string;
+  highlightedDocumentId?: string | null;
 };
 
 function formatLabel(value: string) {
@@ -69,13 +71,20 @@ function formatRatio(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
-export function KnowledgeHub({ workspaceId, documents, artifacts, health }: Props) {
+export function KnowledgeHub({
+  workspaceId,
+  documents,
+  artifacts,
+  health,
+  initialQuery = "",
+  highlightedDocumentId = null
+}: Props) {
   const router = useRouter();
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [searchSourceType, setSearchSourceType] = useState("all");
   const [searchTags, setSearchTags] = useState("");
   const [searchMinTrust, setSearchMinTrust] = useState("0");
@@ -134,9 +143,8 @@ export function KnowledgeHub({ workspaceId, documents, artifacts, health }: Prop
     }
   }
 
-  async function runSearch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const normalized = query.trim();
+  const executeSearch = useCallback(async (nextQuery: string) => {
+    const normalized = nextQuery.trim();
     if (!normalized) {
       setSearchResults([]);
       setSearchObservability(null);
@@ -183,7 +191,19 @@ export function KnowledgeHub({ workspaceId, documents, artifacts, health }: Prop
     } finally {
       setSearching(false);
     }
+  }, [includeDuplicates, searchMinTrust, searchSourceType, searchTags, workspaceId]);
+
+  async function runSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await executeSearch(query);
   }
+
+  useEffect(() => {
+    if (!initialQuery.trim()) {
+      return;
+    }
+    void executeSearch(initialQuery);
+  }, [executeSearch, initialQuery]);
 
   return (
     <section className="space-y-6">
@@ -282,7 +302,14 @@ export function KnowledgeHub({ workspaceId, documents, artifacts, health }: Prop
               </div>
             )}
             {documents.map((document) => (
-              <div key={document.id} className="rounded-[24px] border border-black/10 bg-white/75 p-5">
+              <div
+                key={document.id}
+                className={
+                  document.id === highlightedDocumentId
+                    ? "rounded-[24px] border border-ink bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.12)]"
+                    : "rounded-[24px] border border-black/10 bg-white/75 p-5"
+                }
+              >
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <h3 className="font-medium">{document.title}</h3>
@@ -290,7 +317,7 @@ export function KnowledgeHub({ workspaceId, documents, artifacts, health }: Prop
                       {document.source_type} - {document.mime_type ?? "unknown mime"}
                     </p>
                   </div>
-                  <Badge>{document.status}</Badge>
+                  <Badge>{document.id === highlightedDocumentId ? "Focused" : document.status}</Badge>
                 </div>
                 <div className="mt-4 grid gap-3 md:grid-cols-3">
                   <div className="rounded-[18px] border border-black/10 bg-sand/60 p-4 text-sm text-black/[0.7]">
@@ -311,7 +338,7 @@ export function KnowledgeHub({ workspaceId, documents, artifacts, health }: Prop
                     tags: {document.metadata.tags.map(String).join(", ")}
                   </p>
                 )}
-                {document.metadata?.duplicate_of_document_id && (
+                {Boolean(document.metadata?.duplicate_of_document_id) && (
                   <p className="mt-3 text-xs uppercase tracking-[0.14em] text-red-700">
                     duplicate of {String(document.metadata.duplicate_of_document_id)}
                   </p>

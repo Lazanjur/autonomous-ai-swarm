@@ -1,11 +1,19 @@
 import { ChatWorkspace } from "@/components/app-shell/chat-workspace";
-import { getChatWorkspace, getCurrentSession, hasSessionCookie } from "@/lib/api";
+import {
+  getChatWorkbenchFile,
+  getChatWorkbenchTree,
+  getChatWorkspace,
+  getCurrentSession,
+  getTaskTemplates,
+  hasSessionCookie
+} from "@/lib/api";
+import { resolveActiveWorkspace } from "@/lib/workspace";
 import { redirect } from "next/navigation";
 
 export default async function ChatPage({
   searchParams
 }: {
-  searchParams?: Promise<{ thread?: string }>;
+  searchParams?: Promise<{ workspace?: string; thread?: string; project?: string }>;
 }) {
   const session = await getCurrentSession();
   if (!session?.workspaces?.length) {
@@ -23,8 +31,14 @@ export default async function ChatPage({
   }
 
   const params = searchParams ? await searchParams : undefined;
-  const workspaceId = session.workspaces[0].workspace_id;
-  const data = await getChatWorkspace(workspaceId, params?.thread ?? null);
+  const activeWorkspace = resolveActiveWorkspace(session, params?.workspace);
+  const workspace = activeWorkspace ?? session.workspaces[0];
+  const workspaceId = workspace.workspace_id;
+  const data = await getChatWorkspace(
+    workspaceId,
+    params?.thread ?? null,
+    params?.project ?? null
+  );
   if (!data) {
     return (
       <section className="panel p-6">
@@ -35,5 +49,22 @@ export default async function ChatPage({
       </section>
     );
   }
-  return <ChatWorkspace data={data} />;
+
+  const workbenchTree = await getChatWorkbenchTree(workspaceId, ".");
+  const preferredFile = workbenchTree?.entries.find((entry) =>
+    ["README.md", "todo.md", "package.json", "apps/web/package.json"].includes(entry.relative_path)
+  ) ?? workbenchTree?.entries.find((entry) => entry.kind === "file");
+  const workbenchFile = preferredFile
+    ? await getChatWorkbenchFile(workspaceId, preferredFile.relative_path)
+    : null;
+  const templateCatalog = await getTaskTemplates(workspaceId);
+
+  return (
+    <ChatWorkspace
+      data={data}
+      initialWorkbenchTree={workbenchTree}
+      initialWorkbenchFile={workbenchFile}
+      taskTemplates={templateCatalog?.templates ?? []}
+    />
+  );
 }

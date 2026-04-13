@@ -37,8 +37,17 @@ class WorkspaceFilesystemTool(ToolRuntimeBase):
         audit, started_at = self.start_audit("list_files", request)
         try:
             path = self._resolve_read_path(relative_path)
+            normalized_relative_path = (
+                "."
+                if path == self.root
+                else path.relative_to(self.root).as_posix()
+            )
             if not path.exists():
-                payload = {"path": str(path), "entries": []}
+                payload = {
+                    "path": str(path),
+                    "relative_path": normalized_relative_path,
+                    "entries": [],
+                }
                 audit = self.finalize_audit(audit, started_at, status="completed", response=payload)
                 return self.result(operation="list_files", status="completed", payload=payload, audit=audit)
 
@@ -50,9 +59,15 @@ class WorkspaceFilesystemTool(ToolRuntimeBase):
                         "name": item.name,
                         "relative_path": item.relative_to(self.root).as_posix(),
                         "kind": "dir" if item.is_dir() else "file",
+                        "extension": item.suffix.lower() or None,
+                        "size_bytes": item.stat().st_size if item.is_file() else None,
                     }
                 )
-            payload = {"path": str(path), "entries": sorted(entries, key=lambda item: item["relative_path"])}
+            payload = {
+                "path": str(path),
+                "relative_path": normalized_relative_path,
+                "entries": sorted(entries, key=lambda item: item["relative_path"]),
+            }
             audit = self.finalize_audit(audit, started_at, status="completed", response={"entry_count": len(entries)})
             return self.result(operation="list_files", status="completed", payload=payload, audit=audit)
         except Exception as exc:
@@ -74,6 +89,9 @@ class WorkspaceFilesystemTool(ToolRuntimeBase):
             payload = {
                 "path": str(path),
                 "relative_path": path.relative_to(self.root).as_posix(),
+                "name": path.name,
+                "extension": path.suffix.lower() or None,
+                "size_bytes": path.stat().st_size,
                 "content": content[:max_chars],
                 "truncated": truncated,
             }
@@ -139,6 +157,9 @@ class WorkspaceFilesystemTool(ToolRuntimeBase):
 
     def _resolve_read_path(self, relative_path: str) -> Path:
         return self._resolve_within(self.root, relative_path, "workspace root")
+
+    def resolve_read_path(self, relative_path: str) -> Path:
+        return self._resolve_read_path(relative_path)
 
     def _resolve_write_path(self, relative_path: str) -> Path:
         return self._resolve_within(self.write_root, relative_path, "tool write root")

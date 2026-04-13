@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from time import perf_counter
 import re
@@ -77,10 +78,26 @@ class BrowserAutomationTool(ToolRuntimeBase):
         return self.result(operation="preview", status="completed", payload=payload, audit=audit)
 
     async def execute(self, goal: str) -> dict:
+        return await self.execute_with_events(goal)
+
+    async def execute_with_events(
+        self,
+        goal: str,
+        *,
+        event_handler: Callable[[str, dict], Awaitable[None]] | None = None,
+        event_context: dict | None = None,
+    ) -> dict:
         audit, started_at = self.start_audit("execute", {"goal_preview": goal[:240]})
         request = self._build_request(goal)
         warnings = self._request_warnings(request)
         action_mode = self._action_mode(request)
+        session_id = uuid4().hex
+        event_payload_base = {
+            "session_id": session_id,
+            "session_kind": "browser",
+            "tool": self.name,
+            **(event_context or {}),
+        }
 
         if not settings.browser_enabled:
             return self._audited_failed_result(
@@ -99,7 +116,7 @@ class BrowserAutomationTool(ToolRuntimeBase):
                 "steps": self._planned_steps(request),
                 "actions": [asdict(action) for action in request.actions],
                 "warnings": warnings,
-                "reason": "No explicit HTTP(S) target was detected, so the browser session was not started.",
+                "reason": "No explicit target URL was detected, so the browser session was not started.",
             }
             audit = self.finalize_audit(
                 audit,
@@ -107,7 +124,7 @@ class BrowserAutomationTool(ToolRuntimeBase):
                 status="completed",
                 response={"planned": True, "target_url": None},
             )
-            return self.result(operation="execute", status="completed", payload=payload, audit=audit)
+            return self.result(operation="execute", status="planned", payload=payload, audit=audit)
 
         if not self._is_safe_url(request.target_url):
             return self._audited_failed_result(
@@ -132,16 +149,27 @@ class BrowserAutomationTool(ToolRuntimeBase):
         executed_actions: list[dict] = []
         skipped_actions = [asdict(action) for action in request.actions] if action_mode != "interactive" else []
         started_at = perf_counter()
-        session_token = uuid4().hex
+        await self._emit(
+            event_handler,
+            "computer.session.started",
+            {
+                **event_payload_base,
+                "status": "running",
+                "target_url": request.target_url,
+                "action_mode": action_mode,
+                "actions": [asdict(action) for action in request.actions],
+                "warnings": warnings,
+            },
+        )
 
         try:
             async with playwright_factory as playwright:
                 browser = await playwright.chromium.launch(headless=settings.browser_headless)
-                context = await browser.new_context(
+                browser_context = await browser.new_context(
                     viewport={"width": 1440, "height": 900},
                     ignore_https_errors=True,
                 )
-                page = await context.new_page()
+                page = await browser_context.new_page()
 
                 navigation_started_at = perf_counter()
                 response = await page.goto(
@@ -150,6 +178,19 @@ class BrowserAutomationTool(ToolRuntimeBase):
                     timeout=request.navigation_timeout_ms,
                 )
                 navigation_ms = self._elapsed_ms(navigation_started_at)
+                await self._emit(
+                    event_handler,
+                    "computer.session.updated",
+                    {
+                        **event_payload_base,
+                        "status": "running",
+                        "phase": "navigated",
+                        "target_url": request.target_url,
+                        "final_url": page.url,
+                        "response_status": response.status if response else None,
+                        "navigation_ms": round(navigation_ms, 2),
+                    },
+                )
 
                 try:
                     await page.wait_for_load_state(
@@ -163,12 +204,24 @@ class BrowserAutomationTool(ToolRuntimeBase):
 
                 if action_mode == "interactive":
                     for action in request.actions:
-                        executed_actions.append(
-                            await self._run_action(
-                                page,
-                                action,
-                                timeout_ms=request.action_timeout_ms,
-                            )
+                        action_result = await self._run_action(
+                            page,
+                            action,
+                            timeout_ms=request.action_timeout_ms,
+                        )
+                        executed_actions.append(action_result)
+                        await self._emit(
+                            event_handler,
+                            "computer.session.updated",
+                            {
+                                **event_payload_base,
+                                "status": "running",
+                                "phase": "action",
+                                "target_url": request.target_url,
+                                "final_url": page.url,
+                                "executed_action": action_result,
+                                "executed_actions": executed_actions,
+                            },
                         )
                         try:
                             await page.wait_for_load_state("networkidle", timeout=2500)
@@ -183,7 +236,7 @@ class BrowserAutomationTool(ToolRuntimeBase):
                 artifacts = {}
                 if request.capture_screenshot:
                     screenshot = await page.screenshot(full_page=True, type="png")
-                    screenshot_key = f"browser-runs/{session_token}/page.png"
+                    screenshot_key = f"browser-runs/{session_id}/page.png"
                     artifacts["screenshot"] = {
                         "storage_key": screenshot_key,
                         "path": self.storage.save_bytes(screenshot_key, screenshot),
@@ -191,7 +244,7 @@ class BrowserAutomationTool(ToolRuntimeBase):
                     }
 
                 if request.capture_html:
-                    html_key = f"browser-runs/{session_token}/page.html"
+                    html_key = f"browser-runs/{session_id}/page.html"
                     artifacts["html_snapshot"] = {
                         "storage_key": html_key,
                         "path": self.storage.save_text(html_key, await page.content()),
@@ -208,14 +261,45 @@ class BrowserAutomationTool(ToolRuntimeBase):
                     "warnings": warnings,
                     "snapshot": snapshot,
                 }
-                metadata_key = f"browser-runs/{session_token}/metadata.json"
+                metadata_key = f"browser-runs/{session_id}/metadata.json"
                 artifacts["metadata"] = {
                     "storage_key": metadata_key,
                     "path": self.storage.save_json(metadata_key, metadata_payload),
                     "content_type": "application/json",
                 }
 
-                await context.close()
+                snapshot_event_payload = {
+                    **event_payload_base,
+                    "status": "running",
+                    "phase": "snapshot",
+                    "target_url": request.target_url,
+                    "final_url": page.url,
+                    "page_title": snapshot["page_title"],
+                    "action_mode": action_mode,
+                    "executed_actions": executed_actions,
+                    "skipped_actions": skipped_actions,
+                    "headings": snapshot["headings"],
+                    "links": snapshot["links"],
+                    "extracted_text": snapshot["text"],
+                    "warnings": warnings,
+                    "artifacts": artifacts,
+                    "metrics": {
+                        "response_status": response.status if response else None,
+                        "navigation_ms": round(navigation_ms, 2),
+                        "link_count": snapshot["link_count"],
+                        "heading_count": len(snapshot["headings"]),
+                        "button_count": snapshot["button_count"],
+                        "form_count": snapshot["form_count"],
+                        "captured_text_chars": snapshot["captured_text_chars"],
+                    },
+                }
+                await self._emit(
+                    event_handler,
+                    "browser.snapshot",
+                    snapshot_event_payload,
+                )
+
+                await browser_context.close()
                 await browser.close()
 
                 total_ms = self._elapsed_ms(started_at)
@@ -246,6 +330,26 @@ class BrowserAutomationTool(ToolRuntimeBase):
                         "captured_text_chars": snapshot["captured_text_chars"],
                     },
                 }
+                await self._emit(
+                    event_handler,
+                    "computer.session.completed",
+                    {
+                        **event_payload_base,
+                        "status": "completed",
+                        "target_url": request.target_url,
+                        "final_url": page.url,
+                        "page_title": snapshot["page_title"],
+                        "action_mode": action_mode,
+                        "executed_actions": executed_actions,
+                        "skipped_actions": skipped_actions,
+                        "headings": snapshot["headings"],
+                        "links": snapshot["links"],
+                        "extracted_text": snapshot["text"],
+                        "warnings": warnings,
+                        "artifacts": artifacts,
+                        "metrics": payload["metrics"],
+                    },
+                )
                 audit = self.finalize_audit(
                     audit,
                     started_at,
@@ -262,6 +366,18 @@ class BrowserAutomationTool(ToolRuntimeBase):
             install_hint = self._playwright_install_hint(str(exc))
             if install_hint:
                 warnings.append(install_hint)
+            await self._emit(
+                event_handler,
+                "computer.session.failed",
+                {
+                    **event_payload_base,
+                    "status": "failed",
+                    "target_url": request.target_url,
+                    "action_mode": action_mode,
+                    "warnings": warnings,
+                    "error": f"{exc.__class__.__name__}: {exc}",
+                },
+            )
             return self._audited_failed_result(
                 audit,
                 started_at,
@@ -499,3 +615,12 @@ class BrowserAutomationTool(ToolRuntimeBase):
 
     def _elapsed_ms(self, started_at: float) -> float:
         return (perf_counter() - started_at) * 1000
+
+    async def _emit(
+        self,
+        event_handler: Callable[[str, dict], Awaitable[None]] | None,
+        event: str,
+        payload: dict,
+    ) -> None:
+        if event_handler is not None:
+            await event_handler(event, payload)

@@ -1,0 +1,22 @@
+data_dir: /var/lib/vector
+
+sources:
+  docker_logs:
+    type: docker_logs
+
+transforms:
+  normalize:
+    type: remap
+    inputs: ["docker_logs"]
+    source: |
+      .service = .container_name
+      .observed_at = now()
+      .message = string!(.message)
+
+sinks:
+  local_archive:
+    type: file
+    inputs: ["normalize"]
+    encoding:
+      codec: json
+    path: /var/lib/vector/docker-logs-%Y-%m-%d.jsonl

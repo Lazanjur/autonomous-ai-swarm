@@ -4,8 +4,27 @@ import {
   INTERNAL_API_URL,
   SESSION_COOKIE_NAME
 } from "@/lib/server-runtime";
+import {
+  getE2ESessionToken,
+  getMockCurrentSession,
+  isE2EMockMode
+} from "@/lib/e2e-mocks";
 
 export async function POST(request: NextRequest) {
+  if (isE2EMockMode()) {
+    const data = getMockCurrentSession();
+    const nextResponse = NextResponse.json({
+      user: data.user,
+      workspaces: data.workspaces
+    });
+    nextResponse.cookies.set(
+      SESSION_COOKIE_NAME,
+      getE2ESessionToken(),
+      buildSessionCookieOptions(new Date(Date.now() + 1000 * 60 * 60 * 8))
+    );
+    return nextResponse;
+  }
+
   try {
     const payload = await request.json();
 

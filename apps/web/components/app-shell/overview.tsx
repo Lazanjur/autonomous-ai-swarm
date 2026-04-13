@@ -2,8 +2,10 @@ import { ArrowRight, Bot, Clock3, DatabaseZap, Sparkles } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { withWorkspacePath } from "@/lib/workspace";
 
 type Props = {
+  workspaceId?: string | null;
   threadCount: number;
   runCount: number;
   knowledgeChunks: number;
@@ -19,6 +21,7 @@ type Props = {
 };
 
 export function OverviewPanel({
+  workspaceId,
   threadCount,
   runCount,
   knowledgeChunks,
@@ -58,7 +61,7 @@ export function OverviewPanel({
               intelligence, and automation from one enterprise-grade workspace.
             </p>
           </div>
-          <Button href="/app/chat" className="gap-2 self-start">
+          <Button href={withWorkspacePath("/app/chat", workspaceId)} className="gap-2 self-start">
             Open Chat Workspace
             <ArrowRight className="h-4 w-4" />
           </Button>

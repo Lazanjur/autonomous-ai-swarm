@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { INTERNAL_API_URL, SESSION_COOKIE_NAME } from "@/lib/server-runtime";
+import { getMockChatWorkspace, isE2EMockMode } from "@/lib/e2e-mocks";
 
 export async function GET(request: NextRequest) {
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
@@ -9,12 +10,20 @@ export async function GET(request: NextRequest) {
 
   const workspaceId = request.nextUrl.searchParams.get("workspace_id");
   const threadId = request.nextUrl.searchParams.get("thread_id");
+  const projectId = request.nextUrl.searchParams.get("project_id");
   const query = new URLSearchParams();
   if (workspaceId) {
     query.set("workspace_id", workspaceId);
   }
   if (threadId) {
     query.set("thread_id", threadId);
+  }
+  if (projectId) {
+    query.set("project_id", projectId);
+  }
+
+  if (isE2EMockMode()) {
+    return NextResponse.json(getMockChatWorkspace(workspaceId, threadId, projectId));
   }
 
   try {

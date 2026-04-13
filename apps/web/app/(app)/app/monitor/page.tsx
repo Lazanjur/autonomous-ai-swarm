@@ -1,9 +1,16 @@
 import { Badge } from "@/components/ui/badge";
 import { getChatWorkspace, getCurrentSession, hasSessionCookie } from "@/lib/api";
+import { resolveActiveWorkspace } from "@/lib/workspace";
 
-export default async function MonitorPage() {
+export default async function MonitorPage({
+  searchParams
+}: {
+  searchParams?: Promise<{ workspace?: string }>;
+}) {
   const session = await getCurrentSession();
-  const workspaceId = session?.workspaces[0]?.workspace_id;
+  const params = searchParams ? await searchParams : undefined;
+  const activeWorkspace = resolveActiveWorkspace(session ?? undefined, params?.workspace);
+  const workspaceId = activeWorkspace?.workspace_id ?? session?.workspaces[0]?.workspace_id;
 
   if (!workspaceId) {
     if (await hasSessionCookie()) {
