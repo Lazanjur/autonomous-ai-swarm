@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
@@ -8,12 +8,15 @@ import {
   Bot,
   BookOpen,
   Boxes,
+  ChevronLeft,
+  ChevronRight,
   FileSearch,
   FolderOpen,
   FolderPlus,
   History,
   Layers3,
   LoaderCircle,
+  LogOut,
   MessageSquarePlus,
   Search,
   Settings2,
@@ -42,6 +45,8 @@ const workspaceItems = [
   { href: "/app/admin", label: "Admin", icon: ShieldCheck },
   { href: "/app/settings", label: "Settings", icon: Settings2 }
 ];
+
+const SIDEBAR_COLLAPSE_STORAGE_KEY = "swarm.sidebar.collapsed.v1";
 
 function taskRailHref(
   workspaceId?: string | null,
@@ -83,6 +88,16 @@ function sortProjects(projects: ProjectSummary[]) {
     const rightAt = right.last_activity_at ?? right.updated_at;
     return rightAt.localeCompare(leftAt) || left.name.localeCompare(right.name);
   });
+}
+
+function getWorkspaceInitials(name: string | null | undefined) {
+  const normalized = (name ?? "Workspace")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+  return normalized || "WS";
 }
 
 type TaskRailDisplayItem = {
@@ -129,6 +144,10 @@ export function AppSidebar({
   const [projectDescription, setProjectDescription] = useState("");
   const [projectSubmitting, setProjectSubmitting] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isDesktopSidebar, setIsDesktopSidebar] = useState(false);
+  const [focusSearchOnExpand, setFocusSearchOnExpand] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const deferredSearch = useDeferredValue(search);
   const searchParamKey = searchParams.toString();
   const currentThreadId = searchParams.get("thread");
@@ -137,10 +156,61 @@ export function AppSidebar({
   const searchQuery = deferredSearch.trim();
   const searchReady = searchQuery.length >= 2;
   const searchActive = searchQuery.length > 0;
+  const compactSidebar = sidebarCollapsed && isDesktopSidebar;
 
   useEffect(() => {
     setTaskRailState(taskRail);
   }, [taskRail]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 1280px)");
+    const sync = () => setIsDesktopSidebar(media.matches);
+    sync();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", sync);
+      return () => media.removeEventListener("change", sync);
+    }
+    media.addListener(sync);
+    return () => media.removeListener(sync);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const rawValue = window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY);
+      if (!rawValue) {
+        return;
+      }
+      setSidebarCollapsed(rawValue === "true");
+    } catch {
+      return;
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_COLLAPSE_STORAGE_KEY, String(sidebarCollapsed));
+    } catch {
+      return;
+    }
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    document.body.classList.toggle("left-rail-collapsed", compactSidebar);
+    return () => {
+      document.body.classList.remove("left-rail-collapsed");
+    };
+  }, [compactSidebar]);
+
+  useEffect(() => {
+    if (!focusSearchOnExpand || compactSidebar) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 60);
+    setFocusSearchOnExpand(false);
+    return () => window.clearTimeout(timer);
+  }, [compactSidebar, focusSearchOnExpand]);
 
   useEffect(() => {
     if (!activeWorkspaceId) {
@@ -363,6 +433,12 @@ export function AppSidebar({
   const { recent, history } = useMemo(() => splitItems(scopedDisplayItems), [scopedDisplayItems]);
   const firstVisibleThreadId = scopedDisplayItems[0]?.thread.id ?? null;
   const newTaskHref = taskRailHref(activeWorkspaceId, selectedProjectId, null, true);
+  const currentFocusHref = taskRailHref(
+    activeWorkspaceId,
+    selectedProjectId,
+    currentThreadId ?? firstVisibleThreadId
+  );
+  const workspaceInitials = getWorkspaceInitials(activeWorkspace?.workspace_name);
 
   async function signOut() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -667,30 +743,158 @@ export function AppSidebar({
     return null;
   }
 
-  return (
-    <aside className="shell-sidebar flex h-full min-h-0 flex-col gap-4 p-4">
-      <div className="surface-card p-3.5">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="surface-label">Task Operating System</p>
-            <h2 className="mt-2 font-display text-[1.9rem] leading-none">{activeWorkspace?.workspace_name ?? "Workspace"}</h2>
+  if (compactSidebar) {
+    return (
+      <aside className="shell-sidebar flex h-full min-h-0 flex-col gap-3 p-2.5">
+        <div className="surface-card flex items-center justify-center p-2.5">
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed(false)}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
+            aria-label="Expand left rail"
+            title="Expand left rail"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="surface-card flex flex-col items-center gap-3 p-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-black text-sm font-medium text-white">
+            {workspaceInitials}
           </div>
-          <div className="rounded-full bg-black text-white px-3 py-1.5 text-[11px] uppercase tracking-[0.16em]">
-            Swarm OS
+          <div className="text-center">
+            <p className="surface-label">Focus</p>
+            <p className="mt-1 text-xs font-medium text-black/[0.72]">
+              {selectedProject ? selectedProject.name : "All projects"}
+            </p>
           </div>
         </div>
-        <p className="mt-3 text-sm leading-7 text-black/[0.65]">
-          Organize work by project, create new task streams, and jump back into any persisted run.
+
+        <div className="surface-card flex flex-col items-center gap-2 p-2.5">
+          <Link
+            href={newTaskHref}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-ink text-white transition hover:bg-ink/90"
+            aria-label={selectedProject ? `New task in ${selectedProject.name}` : "New task"}
+            title={selectedProject ? `New task in ${selectedProject.name}` : "New task"}
+          >
+            <MessageSquarePlus className="h-4 w-4" />
+          </Link>
+          <button
+            type="button"
+            onClick={() => {
+              setSidebarCollapsed(false);
+              setFocusSearchOnExpand(true);
+            }}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
+            aria-label="Open search"
+            title="Open search"
+          >
+            <Search className="h-4 w-4" />
+          </button>
+          <Link
+            href={taskRailHref(activeWorkspaceId, selectedProjectId, currentThreadId)}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
+            aria-label={selectedProject ? `${selectedProject.name} tasks` : "Project tasks"}
+            title={selectedProject ? `${selectedProject.name} tasks` : "Project tasks"}
+          >
+            <FolderOpen className="h-4 w-4" />
+          </Link>
+          <Link
+            href={currentFocusHref}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
+            aria-label="All tasks history"
+            title="All tasks history"
+          >
+            <FileSearch className="h-4 w-4" />
+          </Link>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
+          <div className="surface-card flex flex-col items-center gap-2 p-2.5">
+            {workspaceItems.map((item) => {
+              const Icon = item.icon;
+              const href = withWorkspacePath(item.href, activeWorkspaceId);
+              const active = pathname === item.href;
+              return (
+                <Link
+                  key={item.href}
+                  href={href}
+                  className={cn(
+                    "inline-flex h-11 w-11 items-center justify-center rounded-full transition",
+                    active ? "bg-black text-white" : "bg-white/[0.65] text-black/[0.72] hover:bg-white"
+                  )}
+                  aria-label={item.label}
+                  title={item.label}
+                >
+                  <Icon className="h-4 w-4" />
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="surface-card flex flex-col items-center gap-2 p-2.5">
+          <Link
+            href={withWorkspacePath("/app", activeWorkspaceId)}
+            className={cn(
+              "inline-flex h-11 w-11 items-center justify-center rounded-full transition",
+              pathname === "/app" ? "bg-black text-white" : "bg-white/[0.65] text-black/[0.72] hover:bg-white"
+            )}
+            aria-label="Workspace overview"
+            title="Workspace overview"
+          >
+            <Activity className="h-4 w-4" />
+          </Link>
+          <button
+            onClick={signOut}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white/[0.75] text-black/[0.72] transition hover:bg-white"
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="shell-sidebar flex h-full min-h-0 flex-col gap-3 p-3">
+      <div className="surface-card p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="surface-label">Workspace</p>
+          {isDesktopSidebar ? (
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(true)}
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
+              aria-label="Collapse left rail"
+              title="Collapse left rail"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
+        <div className="mt-3">
+          <h2 className="font-display text-[1.65rem] leading-tight">
+            {activeWorkspace?.workspace_name ?? "Workspace"}
+          </h2>
+          <div className="mt-3 inline-flex rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-black/[0.62]">
+            {activeWorkspace?.role ?? session.user.role}
+          </div>
+        </div>
+        <p className="mt-3 text-base leading-7 text-black/[0.62]">
+          New tasks, search, projects, and history stay in this rail.
         </p>
         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-          <div className="rounded-2xl bg-white/78 px-4 py-3 text-sm text-black/[0.68]">
+          <div className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm text-black/[0.68]">
             <div className="font-medium">{session.user.full_name}</div>
             <div className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">
-              {activeWorkspace?.role ?? session.user.role}
+              {session.user.email}
             </div>
           </div>
-          <div className="rounded-2xl bg-sand/70 px-4 py-3 text-sm text-black/[0.68]">
-            <div className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">Rail state</div>
+          <div className="rounded-2xl border border-black/10 bg-sand/35 px-4 py-3 text-sm text-black/[0.68]">
+            <div className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">Focus</div>
             <div className="mt-2 font-medium">{selectedProject ? selectedProject.name : "All projects"}</div>
             <div className="mt-1 text-xs uppercase tracking-[0.14em] text-black/[0.45]">
               {taskRailState?.threads.length ?? 0} persisted tasks
@@ -727,12 +931,13 @@ export function AppSidebar({
           {selectedProject ? `New Task in ${selectedProject.name}` : "New Task"}
         </Link>
 
-        <div className="rounded-[24px] border border-black/10 bg-white/65 px-4 py-3">
+        <div className="rounded-[20px] border border-black/10 bg-white px-4 py-3">
           <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-black/[0.42]">
             <Search className="h-3.5 w-3.5" />
             Search
           </div>
           <input
+            ref={searchInputRef}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder={
@@ -740,7 +945,7 @@ export function AppSidebar({
                 ? `Search ${selectedProject.name} tasks, docs, and artifacts`
                 : "Search projects, tasks, docs, and artifacts"
             }
-            className="mt-3 w-full bg-transparent text-sm leading-7 outline-none placeholder:text-black/[0.35]"
+            className="mt-3 w-full bg-transparent text-base leading-7 outline-none placeholder:text-black/[0.35]"
           />
           <p className="mt-2 text-xs uppercase tracking-[0.16em] text-black/[0.38]">
             {selectedProject ? "Project-scoped search" : "Workspace-global search"}

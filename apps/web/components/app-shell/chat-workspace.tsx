@@ -2,7 +2,16 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import Image from "next/image";
-import { CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CSSProperties,
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
@@ -77,11 +86,10 @@ type OperatorTab =
   | "preview"
   | "timeline"
   | "artifacts";
-type HeaderPanel = "share" | "invite" | "settings" | null;
+type HeaderPanel = "share" | "settings" | null;
 type WorkbenchViewMode = "edit" | "local-diff" | "repo-diff";
 type TerminalStreamMode = "combined" | "stdout" | "stderr";
 type ArtifactPreviewMode = "image" | "frame" | "none";
-type WorkspacePanelKey = "executionBoard" | "runHistory" | "latestSynthesis";
 type OperatingFlowStageStatus = "idle" | "active" | "complete";
 
 type WorkbenchEditorState = {
@@ -296,10 +304,10 @@ const OPERATOR_TAB_OPTIONS: Array<{
   { key: "artifacts", label: "Artifacts", icon: Boxes }
 ];
 
-const DEFAULT_WORKSPACE_SPLIT = 50;
-const MIN_WORKSPACE_SPLIT = 44;
-const MAX_WORKSPACE_SPLIT = 64;
-const WORKSPACE_LAYOUT_STORAGE_KEY = "swarm.workspace.layout.v1";
+const DEFAULT_WORKSPACE_SPLIT = 51;
+const MIN_WORKSPACE_SPLIT = 46;
+const MAX_WORKSPACE_SPLIT = 66;
+const WORKSPACE_LAYOUT_STORAGE_KEY = "swarm.workspace.layout.v2";
 const CITATION_REFERENCE_PATTERN = /\[(S\d+)\]/g;
 
 function statusLabel(status: string) {
@@ -2036,17 +2044,14 @@ export function ChatWorkspace({
   const [workspacePaneWidth, setWorkspacePaneWidth] = useState(DEFAULT_WORKSPACE_SPLIT);
   const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
   const [operatorPaneCollapsed, setOperatorPaneCollapsed] = useState(false);
-  const [collapsedPanels, setCollapsedPanels] = useState<Record<WorkspacePanelKey, boolean>>({
-    executionBoard: false,
-    runHistory: false,
-    latestSynthesis: false
-  });
+  const [workbenchExpanded, setWorkbenchExpanded] = useState(false);
   const [isResizingWorkspace, setIsResizingWorkspace] = useState(false);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(
     data.selected_thread_id ?? data.threads[0]?.id ?? null
   );
   const workspaceShellRef = useRef<HTMLElement | null>(null);
   const composerFileInputRef = useRef<HTMLInputElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const speechRecognitionRef = useRef<BrowserSpeechRecognitionLike | null>(null);
   const autoCreateMarker = useRef<string | null>(null);
   const terminalOutputRef = useRef<HTMLDivElement | null>(null);
@@ -2353,7 +2358,7 @@ export function ChatWorkspace({
     );
   }, [selectedWorkbenchFile?.relative_path, todoSyncPath, workbenchTree]);
   const workspaceColumns = useMemo(() => {
-    if (!isDesktopWorkspace) {
+    if (workbenchExpanded || !isDesktopWorkspace) {
       return "minmax(0,1fr)";
     }
     if (workspacePaneCollapsed) {
@@ -2363,7 +2368,7 @@ export function ChatWorkspace({
       return "minmax(0,1fr) 16px 88px";
     }
     return `calc(${workspacePaneWidth}% - 8px) 16px calc(${100 - workspacePaneWidth}% - 8px)`;
-  }, [isDesktopWorkspace, operatorPaneCollapsed, workspacePaneCollapsed, workspacePaneWidth]);
+  }, [isDesktopWorkspace, operatorPaneCollapsed, workbenchExpanded, workspacePaneCollapsed, workspacePaneWidth]);
   const workspaceShellStyle = useMemo(
     () =>
       ({
@@ -2371,7 +2376,6 @@ export function ChatWorkspace({
       }) as CSSProperties,
     [workspaceColumns]
   );
-  const hasLatestSynthesis = Boolean(latestAssistant?.metadata?.summary);
   const runningComputerSessionCount = useMemo(
     () => computerSessions.filter((session) => session.status === "running").length,
     [computerSessions]
@@ -2541,15 +2545,20 @@ export function ChatWorkspace({
     });
   }
 
-  function toggleWorkspacePanel(panel: WorkspacePanelKey) {
-    setCollapsedPanels((current) => ({
-      ...current,
-      [panel]: !current[panel]
-    }));
+  function toggleWorkbenchExpanded() {
+    setWorkbenchExpanded((current) => {
+      const next = !current;
+      if (next) {
+        setWorkspacePaneCollapsed(false);
+        setOperatorPaneCollapsed(false);
+        setIsResizingWorkspace(false);
+      }
+      return next;
+    });
   }
 
   function startWorkspaceResize(event: ReactMouseEvent<HTMLButtonElement>) {
-    if (!isDesktopWorkspace || workspacePaneCollapsed || operatorPaneCollapsed) {
+    if (!isDesktopWorkspace || workspacePaneCollapsed || operatorPaneCollapsed || workbenchExpanded) {
       return;
     }
     event.preventDefault();
@@ -3380,6 +3389,23 @@ export function ChatWorkspace({
   }, []);
 
   useEffect(() => {
+    document.body.classList.toggle("workbench-focus-mode", workbenchExpanded);
+    return () => {
+      document.body.classList.remove("workbench-focus-mode");
+    };
+  }, [workbenchExpanded]);
+
+  useEffect(() => {
+    const textarea = composerTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "0px";
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 48), 120);
+    textarea.style.height = `${nextHeight}px`;
+  }, [draft]);
+
+  useEffect(() => {
     const browserWindow = window as typeof window & {
       SpeechRecognition?: BrowserSpeechRecognitionConstructor;
       webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
@@ -3404,7 +3430,7 @@ export function ChatWorkspace({
         workspacePaneWidth?: number;
         workspacePaneCollapsed?: boolean;
         operatorPaneCollapsed?: boolean;
-        collapsedPanels?: Partial<Record<WorkspacePanelKey, boolean>>;
+        workbenchExpanded?: boolean;
       };
       if (typeof parsed.workspacePaneWidth === "number") {
         setWorkspacePaneWidth(
@@ -3414,14 +3440,10 @@ export function ChatWorkspace({
       const nextWorkspaceCollapsed = Boolean(parsed.workspacePaneCollapsed);
       const nextOperatorCollapsed =
         nextWorkspaceCollapsed ? false : Boolean(parsed.operatorPaneCollapsed);
-      setWorkspacePaneCollapsed(nextWorkspaceCollapsed);
-      setOperatorPaneCollapsed(nextOperatorCollapsed);
-      if (parsed.collapsedPanels) {
-        setCollapsedPanels((current) => ({
-          ...current,
-          ...parsed.collapsedPanels
-        }));
-      }
+      const nextWorkbenchExpanded = Boolean(parsed.workbenchExpanded);
+      setWorkspacePaneCollapsed(nextWorkbenchExpanded ? false : nextWorkspaceCollapsed);
+      setOperatorPaneCollapsed(nextWorkbenchExpanded ? false : nextOperatorCollapsed);
+      setWorkbenchExpanded(nextWorkbenchExpanded);
     } catch {
       return;
     }
@@ -3434,13 +3456,19 @@ export function ChatWorkspace({
         workspacePaneWidth,
         workspacePaneCollapsed,
         operatorPaneCollapsed,
-        collapsedPanels
+        workbenchExpanded
       })
     );
-  }, [collapsedPanels, operatorPaneCollapsed, workspacePaneCollapsed, workspacePaneWidth]);
+  }, [operatorPaneCollapsed, workbenchExpanded, workspacePaneCollapsed, workspacePaneWidth]);
 
   useEffect(() => {
-    if (!isDesktopWorkspace || !isResizingWorkspace || workspacePaneCollapsed || operatorPaneCollapsed) {
+    if (
+      !isDesktopWorkspace ||
+      !isResizingWorkspace ||
+      workspacePaneCollapsed ||
+      operatorPaneCollapsed ||
+      workbenchExpanded
+    ) {
       return;
     }
     const handlePointerMove = (event: MouseEvent) => {
@@ -3470,7 +3498,7 @@ export function ChatWorkspace({
       window.removeEventListener("mousemove", handlePointerMove);
       window.removeEventListener("mouseup", stopResizing);
     };
-  }, [isDesktopWorkspace, isResizingWorkspace, operatorPaneCollapsed, workspacePaneCollapsed]);
+  }, [isDesktopWorkspace, isResizingWorkspace, operatorPaneCollapsed, workbenchExpanded, workspacePaneCollapsed]);
 
   useEffect(() => {
     if (!rootWorkbenchTree) {
@@ -4321,6 +4349,17 @@ export function ChatWorkspace({
     await submitRunMessage(draft);
   }
 
+  function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
+    }
+    event.preventDefault();
+    if (running || isTaskPaused || !draft.trim()) {
+      return;
+    }
+    void submitRunMessage(draft);
+  }
+
   function renderWorkbenchDirectory(relativePath: string, depth = 0) {
     const directory = workbenchTree[relativePath];
     if (!directory) {
@@ -4435,10 +4474,10 @@ export function ChatWorkspace({
   return (
     <section
       ref={workspaceShellRef}
-      className="grid grid-cols-1 gap-3 xl:h-full xl:min-h-0 xl:items-stretch xl:gap-0 xl:[grid-template-columns:var(--workspace-columns)]"
+      className="grid grid-cols-1 gap-2 xl:h-full xl:min-h-0 xl:items-stretch xl:gap-0 xl:[grid-template-columns:var(--workspace-columns)]"
       style={workspaceShellStyle}
     >
-      <div className="min-w-0 min-h-0">
+      <div className={cn("min-w-0 min-h-0", workbenchExpanded && "hidden")}>
         {isDesktopWorkspace && workspacePaneCollapsed ? (
           <div className="surface-card-strong flex h-full min-h-[calc(100vh-13rem)] flex-col items-center justify-between px-3 py-5">
             <button
@@ -4554,136 +4593,97 @@ export function ChatWorkspace({
               })}
           </div>
         </motion.div>
-        <div className="flex items-start justify-between gap-4 border-b border-black/10 pb-4">
-          <div>
-            <Badge>Autonomous Chat</Badge>
-            <h1 className="mt-2 font-display text-3xl xl:text-[2rem]">Swarm workspace</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-black/[0.65] xl:max-w-xl">
-              The center column stays conversation-first, while the right column carries the operator state and workbench.
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/10 pb-3">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="surface-label">Chat</p>
+              {running ? (
+                <span className="rounded-full bg-black text-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em]">
+                  Live run
+                </span>
+              ) : activeThread ? (
+                <span className="rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-black/[0.46]">
+                  {formatRelativeTime(activeThread.updated_at)}
+                </span>
+              ) : null}
+            </div>
+            <h1 className="font-display text-[1.55rem] leading-[1.04] text-black/[0.86] xl:text-[1.7rem]">
+              {activeThread?.title ?? selectedProject?.name ?? "Swarm workspace"}
+            </h1>
+            <p className="max-w-[38rem] text-sm leading-6 text-black/[0.54]">
+              {activeThread
+                ? "Conversation stays centered here while the workbench handles execution on the right."
+                : currentProjectId
+                  ? "Choose a task from the rail or start a fresh thread."
+                  : "Start a task from the rail and keep this column focused on chat."}
             </p>
           </div>
-          <div className="flex max-w-[720px] flex-col items-end gap-2">
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {running && (
-                <Badge className="bg-ink text-white border-transparent">
-                  <LoaderCircle className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  Batch {activeBatchIndex !== null ? activeBatchIndex + 1 : 1}
-                </Badge>
-              )}
-              <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72]">
-                <span className="text-xs uppercase tracking-[0.14em] text-black/[0.45]">Model</span>
-                <div className="relative">
-                  <select
-                    value={selectedModelProfile}
-                    onChange={(event) => void handleModelProfileChange(event.target.value)}
-                    disabled={!activeThread || headerActionLoading === "model"}
-                    className="appearance-none bg-transparent pr-6 text-sm outline-none disabled:opacity-60"
-                  >
-                    {MODEL_PROFILE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 text-black/[0.45]" />
-                </div>
+          <div className="flex max-w-[660px] flex-wrap items-center justify-end gap-1.5">
+            <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-sm text-black/[0.68]">
+              <span className="text-[10px] uppercase tracking-[0.14em] text-black/[0.45]">Model</span>
+              <div className="relative">
+                <select
+                  value={selectedModelProfile}
+                  onChange={(event) => void handleModelProfileChange(event.target.value)}
+                  disabled={!activeThread || headerActionLoading === "model"}
+                  className="appearance-none bg-transparent pr-6 text-[13px] outline-none disabled:opacity-60"
+                >
+                  {MODEL_PROFILE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 text-black/[0.45]" />
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setHeaderPanel((current) => (current === "share" ? null : "share"));
-                  setHeaderError(null);
-                  setHeaderNotice(null);
-                }}
-                disabled={!activeThread}
-                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72] disabled:opacity-60"
-              >
-                <Copy className="h-3.5 w-3.5" />
-                Share
-              </button>
-              <button
-                type="button"
-                onClick={() => void togglePublishState()}
-                disabled={!activeThread || headerActionLoading === "publish"}
-                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72] disabled:opacity-60"
-              >
-                <ArrowUpRight className="h-3.5 w-3.5" />
-                {headerActionLoading === "publish" ? "Saving..." : publishState ? "Unpublish" : "Publish"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void forkActiveThread()}
-                disabled={!activeThread || headerActionLoading === "fork"}
-                className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72] disabled:opacity-60"
-              >
-                {headerActionLoading === "fork" ? "Forking..." : "Duplicate / Fork"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setHeaderPanel((current) => (current === "invite" ? null : "invite"));
-                  setHeaderError(null);
-                  setHeaderNotice(null);
-                }}
-                disabled={!activeThread}
-                className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72] disabled:opacity-60"
-              >
-                Collaborator / Invite
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setHeaderPanel((current) => (current === "settings" ? null : "settings"));
-                  setHeaderError(null);
-                  setHeaderNotice(null);
-                }}
-                disabled={!activeThread}
-                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72] disabled:opacity-60"
-              >
-                <Settings2 className="h-3.5 w-3.5" />
-                Task settings
-              </button>
-              <button
-                type="button"
-                className="rounded-full bg-ink px-4 py-3 text-sm text-white"
-                onClick={createThread}
-              >
-                New Thread
-              </button>
-              <button
-                type="button"
-                onClick={toggleWorkspacePaneCollapsed}
-                className="hidden h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45 xl:inline-flex"
-                aria-label="Collapse chat workspace"
-                title="Collapse chat workspace"
-              >
-                <ChevronRight className="h-4 w-4 rotate-180" />
-              </button>
             </div>
-            {activeThread && (
-              <div className="flex flex-wrap items-center justify-end gap-2 text-xs uppercase tracking-[0.14em] text-black/[0.48]">
-                {selectedTaskTemplate && (
-                  <span className="rounded-full bg-black/[0.04] px-2 py-1">
-                    {selectedTaskTemplate.name}
-                  </span>
-                )}
-                <span className="rounded-full bg-black/[0.04] px-2 py-1">
-                  {MODEL_PROFILE_OPTIONS.find((option) => option.value === selectedModelProfile)?.description ??
-                    selectedModelProfile}
-                </span>
-                <span className="rounded-full bg-black/[0.04] px-2 py-1">
-                  {publishState ? "Published" : "Private draft"}
-                </span>
-                <span className="rounded-full bg-black/[0.04] px-2 py-1">
-                  {collaboratorList.length} collaborators
-                </span>
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => {
+                setHeaderPanel((current) => (current === "share" ? null : "share"));
+                setHeaderError(null);
+                setHeaderNotice(null);
+              }}
+              disabled={!activeThread}
+              className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
+            >
+              <Copy className="h-3.5 w-3.5" />
+              Share
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHeaderPanel((current) => (current === "settings" ? null : "settings"));
+                setHeaderError(null);
+                setHeaderNotice(null);
+              }}
+              disabled={!activeThread}
+              className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+              More
+            </button>
+            <button
+              type="button"
+              className="rounded-full bg-ink px-3.5 py-2 text-[13px] text-white"
+              onClick={createThread}
+            >
+              New
+            </button>
+            <button
+              type="button"
+              onClick={toggleWorkspacePaneCollapsed}
+              className="hidden h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45 xl:inline-flex"
+              aria-label="Collapse chat workspace"
+              title="Collapse chat workspace"
+            >
+              <ChevronRight className="h-4 w-4 rotate-180" />
+            </button>
           </div>
         </div>
 
         {(headerPanel || headerError || headerNotice) && (
-          <div className="mt-4 rounded-[24px] border border-black/10 bg-white/75 p-4">
+          <div className="mt-3 rounded-[20px] border border-black/10 bg-white/75 p-3.5">
             {headerError && <p className="text-sm text-red-700">{headerError}</p>}
             {headerNotice && <p className="text-sm text-emerald-700">{headerNotice}</p>}
 
@@ -4717,51 +4717,42 @@ export function ChatWorkspace({
               </div>
             )}
 
-            {headerPanel === "invite" && activeThread && (
-              <div className="mt-3 space-y-3">
-                <div>
-                  <p className="text-sm font-medium text-black/[0.82]">Collaborators</p>
-                  <p className="mt-1 text-sm leading-7 text-black/[0.62]">
-                    Track who this task should be shared with. This persists at the task level so the workspace keeps context around intended reviewers.
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {collaboratorList.length > 0 ? (
-                    collaboratorList.map((email) => (
-                      <span key={email} className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.7]">
-                        {email}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-sm text-black/[0.55]">No collaborators have been attached to this task yet.</span>
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  <input
-                    value={inviteEmail}
-                    onChange={(event) => setInviteEmail(event.target.value)}
-                    placeholder="colleague@example.com"
-                    className="min-w-[260px] rounded-full border border-black/10 bg-white px-4 py-2 text-sm outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void inviteCollaborator()}
-                    disabled={!inviteEmail.trim() || headerActionLoading === "invite"}
-                    className="rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
-                  >
-                    {headerActionLoading === "invite" ? "Adding..." : "Add collaborator"}
-                  </button>
-                </div>
-              </div>
-            )}
-
             {headerPanel === "settings" && activeThread && (
               <div className="mt-3 space-y-4">
                 <div>
-                  <p className="text-sm font-medium text-black/[0.82]">Task settings</p>
+                  <p className="text-sm font-medium text-black/[0.82]">Task actions and settings</p>
                   <p className="mt-1 text-sm leading-7 text-black/[0.62]">
-                    Update the task title, status, and workspace-facing metadata without leaving the chat runtime.
+                    Keep the header quiet, then handle publish, duplicate, collaborator, and task state controls here.
                   </p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <button
+                    type="button"
+                    onClick={() => void togglePublishState()}
+                    disabled={headerActionLoading === "publish"}
+                    className="inline-flex items-center justify-center gap-2 rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm text-black/[0.72] transition hover:bg-sand/35 disabled:opacity-60"
+                  >
+                    <ArrowUpRight className="h-3.5 w-3.5" />
+                    {headerActionLoading === "publish" ? "Saving..." : publishState ? "Unpublish task" : "Publish task"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void forkActiveThread()}
+                    disabled={headerActionLoading === "fork"}
+                    className="inline-flex items-center justify-center gap-2 rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm text-black/[0.72] transition hover:bg-sand/35 disabled:opacity-60"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    {headerActionLoading === "fork" ? "Forking..." : "Duplicate thread"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void setTaskStatus(isTaskPaused ? "active" : "paused")}
+                    disabled={headerActionLoading === "active" || headerActionLoading === "paused"}
+                    className="inline-flex items-center justify-center gap-2 rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm text-black/[0.72] transition hover:bg-sand/35 disabled:opacity-60"
+                  >
+                    {isTaskPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+                    {isTaskPaused ? "Resume task" : "Pause task"}
+                  </button>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <label className="space-y-2 text-sm text-black/[0.72]">
@@ -4784,6 +4775,41 @@ export function ChatWorkspace({
                       <option value="archived">Archived</option>
                     </select>
                   </label>
+                </div>
+                <div className="space-y-3 rounded-[20px] border border-black/10 bg-sand/25 px-4 py-4">
+                  <div>
+                    <p className="text-sm font-medium text-black/[0.82]">Collaborators</p>
+                    <p className="mt-1 text-sm leading-7 text-black/[0.62]">
+                      Manage the people attached to this task without dedicating a permanent header button to it.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {collaboratorList.length > 0 ? (
+                      collaboratorList.map((email) => (
+                        <span key={email} className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.7]">
+                          {email}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-sm text-black/[0.55]">No collaborators attached yet.</span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <input
+                      value={inviteEmail}
+                      onChange={(event) => setInviteEmail(event.target.value)}
+                      placeholder="colleague@example.com"
+                      className="min-w-[260px] rounded-full border border-black/10 bg-white px-4 py-2 text-sm outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void inviteCollaborator()}
+                      disabled={!inviteEmail.trim() || headerActionLoading === "invite"}
+                      className="rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+                    >
+                      {headerActionLoading === "invite" ? "Adding..." : "Add collaborator"}
+                    </button>
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-3">
                   <button
@@ -5252,9 +5278,9 @@ export function ChatWorkspace({
           </div>
         )}
 
-        <div className="mt-5 min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
+        <div className="mt-3 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           {messages.length === 0 && (
-            <div className="rounded-[28px] border border-black/10 bg-white/70 p-6 text-sm leading-7 text-black/70">
+            <div className="rounded-[24px] border border-black/10 bg-white/92 p-6 text-base leading-8 text-black/70">
               {loadingThread
                 ? "Loading thread history..."
                 : activeThread
@@ -5276,46 +5302,36 @@ export function ChatWorkspace({
                   key={message.id}
                   className={
                     message.role === "assistant"
-                      ? "rounded-[28px] bg-white p-5"
-                      : "rounded-[28px] border border-black/10 bg-black/[0.02] p-5"
+                      ? "rounded-[20px] border border-black/10 bg-white/96 px-6 py-5"
+                      : "rounded-[20px] border border-black/10 bg-stone-50/90 px-6 py-5"
                   }
                 >
-                  <div className="mb-3 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={`flex h-10 w-10 items-center justify-center rounded-full ${
-                          message.role === "assistant" ? "bg-pine text-white" : "bg-black text-white"
-                        }`}
-                      >
-                        {message.role === "assistant" ? <Sparkles className="h-4 w-4" /> : "U"}
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold capitalize">{message.role}</p>
-                        <p className="text-xs text-black/50">{formatRelativeTime(message.created_at)}</p>
-                      </div>
+                  <div className="mb-4 flex items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <p className="text-[12px] uppercase tracking-[0.14em] text-black/[0.5]">
+                        {message.role === "assistant" ? "Swarm" : "You"}
+                      </p>
+                      <p className="text-sm text-black/[0.48]">{formatRelativeTime(message.created_at)}</p>
                     </div>
-                    {message.role === "assistant" && (
-                      <div className="flex flex-wrap items-center justify-end gap-2">
-                        <Badge className="bg-mist/70 text-black/70">Supervisor synthesis</Badge>
-                        {message.citations.length > 0 && (
-                          <Badge className="bg-sand/80 text-black/70">Grounded answer</Badge>
-                        )}
-                      </div>
+                    {message.role === "assistant" && message.citations.length > 0 && (
+                      <span className="rounded-full border border-black/10 bg-sand/35 px-3 py-1.5 text-[11px] uppercase tracking-[0.12em] text-black/[0.5]">
+                        grounded
+                      </span>
                     )}
                   </div>
 
-                  <div className="space-y-3">
+                  <div className="space-y-4 text-[15px] leading-8 text-black/[0.8] md:text-[16px]">
                     {renderMessageContent(message.content, citationLookup)}
                   </div>
 
                   {message.citations.length > 0 && (
-                    <div className="mt-5 rounded-[22px] border border-black/10 bg-sand/70 p-4">
+                    <div className="mt-5 rounded-[18px] border border-black/10 bg-sand/30 p-4">
                       <div className="mb-3 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2 text-sm font-medium">
+                        <div className="flex items-center gap-2 text-sm font-medium text-black/[0.76]">
                           <Globe className="h-4 w-4" />
                           Sources
                         </div>
-                        <div className="flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
+                        <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.14em] text-black/[0.42]">
                           {referencedCitationIds.map((referenceId) => (
                             <span key={`${message.id}-${referenceId}`} className="rounded-full bg-white/80 px-2 py-1">
                               {referenceId}
@@ -5334,7 +5350,7 @@ export function ChatWorkspace({
                             citation.url ??
                             `${message.id}-${citationIndex}`;
                           const cardClasses = cn(
-                            "block rounded-2xl bg-white/80 px-4 py-3 text-sm transition",
+                            "block rounded-[16px] bg-white/85 px-4 py-3 text-sm transition",
                             href ? "hover:bg-white" : ""
                           );
                           const cardContent = (
@@ -5368,9 +5384,9 @@ export function ChatWorkspace({
                                 {href && <ArrowUpRight className="h-4 w-4 shrink-0 text-black/50" />}
                               </div>
                               {citation.excerpt && (
-                                <p className="mt-3 text-sm leading-7 text-black/[0.66]">
-                                  {citation.excerpt}
-                                </p>
+                              <p className="mt-3 text-sm leading-7 text-black/[0.66]">
+                                {citation.excerpt}
+                              </p>
                               )}
                               {typeof citation.score === "number" && (
                                 <div className="mt-3 text-[11px] uppercase tracking-[0.16em] text-black/[0.44]">
@@ -5528,201 +5544,143 @@ export function ChatWorkspace({
           </div>
         )}
 
-        <form className="mt-4 shrink-0 border-t border-black/10 pt-4" onSubmit={handleSubmit}>
-          <div className="rounded-[28px] border border-black/10 bg-white/75 p-4">
-            <input
-              ref={composerFileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(event) => void uploadComposerFiles(event.target.files)}
-            />
-            {isTaskPaused && (
-              <div className="mb-4 rounded-[20px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                This task is paused. Resume it to send a new message or continue any pending approval flow.
-              </div>
-            )}
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => composerFileInputRef.current?.click()}
-                disabled={composerUploading || isTaskPaused}
-                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72] transition hover:bg-white disabled:opacity-60"
-              >
-                <Paperclip className="h-4 w-4" />
-                {composerUploading ? "Uploading..." : "Attach files"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowComposerAttachments((current) => !current)}
-                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72] transition hover:bg-white"
-              >
-                <Link2 className="h-4 w-4" />
-                Sources
-              </button>
-              <button
-                type="button"
-                onClick={attachWorkbenchFile}
-                disabled={!selectedWorkbenchFile}
-                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72] transition hover:bg-white disabled:opacity-60"
-              >
-                <Code2 className="h-4 w-4" />
-                Attach code file
-              </button>
-              <button
-                type="button"
-                onClick={toggleVoiceInput}
-                disabled={!voiceSupported || isTaskPaused}
-                className={cn(
-                  "inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm transition disabled:opacity-60",
-                  voiceListening
-                    ? "border-transparent bg-ink text-white"
-                    : "border-black/10 bg-white text-black/[0.72] hover:bg-white"
-                )}
-              >
-                <Mic className="h-4 w-4" />
-                {voiceListening ? "Stop dictation" : "Voice input"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowComposerShortcuts((current) => !current)}
-                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.72] transition hover:bg-white"
-              >
-                <Sparkles className="h-4 w-4" />
-                Tool shortcuts
-              </button>
-            </div>
+        <form className="relative mt-4 shrink-0 border-t border-black/10 pt-4" onSubmit={handleSubmit}>
+          <input
+            ref={composerFileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => void uploadComposerFiles(event.target.files)}
+          />
 
-            {(showComposerAttachments || composerAttachments.length > 0) && (
-              <div className="mb-4 rounded-[24px] border border-black/10 bg-sand/35 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-black/[0.82]">Attachments and source context</p>
-                    <p className="mt-1 text-sm leading-7 text-black/[0.62]">
-                      Upload files into workspace knowledge, attach live URLs, or pull in files and outputs already visible in this task.
-                    </p>
+          <AnimatePresence>
+            {(showComposerAttachments || showComposerShortcuts) && (
+              <motion.div
+                initial={prefersReducedMotion ? false : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={prefersReducedMotion ? undefined : { opacity: 0, y: 8 }}
+                transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.18, ease: "easeOut" }}
+                className="absolute bottom-full left-0 right-0 z-20 mb-3 space-y-3"
+              >
+                {showComposerAttachments && (
+                  <div className="rounded-[24px] border border-black/10 bg-white/96 p-4 shadow-[0_18px_34px_rgba(30,25,18,0.08)] backdrop-blur-xl">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-black/[0.82]">Context</p>
+                        <p className="mt-1 text-sm leading-6 text-black/[0.58]">
+                          Attach files, URLs, current code, and recent outputs without taking height from the chat stream.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowComposerAttachments(false)}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.62] transition hover:bg-sand/45"
+                        aria-label="Close context panel"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <input
+                        value={urlAttachmentDraft}
+                        onChange={(event) => setUrlAttachmentDraft(event.target.value)}
+                        placeholder="https://example.com/source"
+                        className="min-w-[240px] flex-1 rounded-full border border-black/10 bg-sand/20 px-4 py-2.5 text-sm outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={attachUrlReference}
+                        className="rounded-full border border-black/10 bg-white px-4 py-2.5 text-sm text-black/[0.72] transition hover:bg-sand/45"
+                      >
+                        Attach URL
+                      </button>
+                      <button
+                        type="button"
+                        onClick={attachWorkbenchFile}
+                        disabled={!selectedWorkbenchFile}
+                        className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2.5 text-sm text-black/[0.72] transition hover:bg-sand/45 disabled:opacity-60"
+                      >
+                        <Code2 className="h-4 w-4" />
+                        Current file
+                      </button>
+                    </div>
+                    {mergedArtifacts.length > 0 && (
+                      <div className="mt-4">
+                        <p className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">Recent outputs</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {mergedArtifacts.slice(0, 6).map((artifact) => (
+                            <button
+                              key={`composer-artifact-${artifact.storage_key}`}
+                              type="button"
+                              onClick={() => attachRecentArtifact(artifact)}
+                              className="rounded-full border border-black/10 bg-sand/25 px-3 py-2 text-xs text-black/[0.7] transition hover:bg-sand/45"
+                            >
+                              {artifactLabel(artifact)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  {composerAttachments.length > 0 && (
-                    <span className="rounded-full bg-white/80 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.48]">
-                      {composerAttachments.length} attached
-                    </span>
-                  )}
-                </div>
-                <div className="mt-4 flex flex-wrap gap-3">
-                  <input
-                    value={urlAttachmentDraft}
-                    onChange={(event) => setUrlAttachmentDraft(event.target.value)}
-                    placeholder="https://example.com/source"
-                    className="min-w-[280px] flex-1 rounded-full border border-black/10 bg-white px-4 py-2 text-sm outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={attachUrlReference}
-                    className="rounded-full bg-white px-4 py-2 text-sm text-black/[0.72] transition hover:bg-white"
-                  >
-                    Attach URL
-                  </button>
-                </div>
-                {mergedArtifacts.length > 0 && (
-                  <div className="mt-4">
-                    <p className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">Recent outputs</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {mergedArtifacts.slice(0, 6).map((artifact) => (
-                        <button
-                          key={`composer-artifact-${artifact.storage_key}`}
-                          type="button"
-                          onClick={() => attachRecentArtifact(artifact)}
-                          className="rounded-full border border-black/10 bg-white/80 px-3 py-2 text-xs text-black/[0.68] transition hover:bg-white"
-                        >
-                          {artifactLabel(artifact)}
-                        </button>
-                      ))}
+                )}
+
+                {showComposerShortcuts && (
+                  <div className="rounded-[24px] border border-black/10 bg-white/96 p-4 shadow-[0_18px_34px_rgba(30,25,18,0.08)] backdrop-blur-xl">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-black/[0.82]">Tools</p>
+                        <p className="mt-1 text-sm leading-6 text-black/[0.58]">
+                          Lightweight presets that guide the next run without filling the chat column.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowComposerShortcuts(false)}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.62] transition hover:bg-sand/45"
+                        aria-label="Close tools panel"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {COMPOSER_SHORTCUTS.map((shortcut) => {
+                        const active = selectedComposerShortcutKeys.includes(shortcut.key);
+                        return (
+                          <button
+                            key={shortcut.key}
+                            type="button"
+                            onClick={() => toggleComposerShortcut(shortcut)}
+                            className={cn(
+                              "rounded-full border px-3 py-2 text-xs uppercase tracking-[0.14em] transition",
+                              active
+                                ? "border-transparent bg-ink text-white"
+                                : "border-black/10 bg-white text-black/[0.68] hover:bg-sand/45"
+                            )}
+                            title={shortcut.description}
+                          >
+                            {shortcut.label}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
-                {composerAttachments.length > 0 && (
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {composerAttachments.map((attachment) => (
-                      <div
-                        key={attachment.id}
-                        className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-xs text-black/[0.72]"
-                      >
-                        <span className="uppercase tracking-[0.14em] text-black/[0.45]">
-                          {attachmentKindLabel(attachment.kind)}
-                        </span>
-                        <span className="max-w-[220px] truncate">{attachment.label}</span>
-                        <button
-                          type="button"
-                          onClick={() => removeComposerAttachment(attachment.id)}
-                          className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-black/[0.06] text-black/[0.6]"
-                          aria-label={`Remove ${attachment.label}`}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              </motion.div>
             )}
+          </AnimatePresence>
 
-            {(showComposerShortcuts || selectedComposerShortcuts.length > 0) && (
-              <div className="mb-4 rounded-[24px] border border-black/10 bg-white/65 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-black/[0.82]">Tool shortcuts</p>
-                    <p className="mt-1 text-sm leading-7 text-black/[0.62]">
-                      Steer the supervisor toward the kind of run you want before it starts.
-                    </p>
-                  </div>
-                  <span className="rounded-full bg-sand/70 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.48]">
-                    {selectedComposerShortcuts.length} active
-                  </span>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {COMPOSER_SHORTCUTS.map((shortcut) => {
-                    const active = selectedComposerShortcutKeys.includes(shortcut.key);
-                    return (
-                      <button
-                        key={shortcut.key}
-                        type="button"
-                        onClick={() => toggleComposerShortcut(shortcut)}
-                        className={cn(
-                          "rounded-full border px-3 py-2 text-xs uppercase tracking-[0.14em] transition",
-                          active
-                            ? "border-transparent bg-ink text-white"
-                            : "border-black/10 bg-white text-black/[0.68] hover:bg-sand/45"
-                        )}
-                        title={shortcut.description}
-                      >
-                        {shortcut.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                {selectedComposerShortcuts.length > 0 && (
-                  <div className="mt-4 space-y-2">
-                    {selectedComposerShortcuts.map((shortcut) => (
-                      <div key={`composer-shortcut-${shortcut.key}`} className="rounded-[18px] bg-sand/55 px-4 py-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-sm font-medium text-black/[0.82]">{shortcut.label}</p>
-                          <span className="text-xs uppercase tracking-[0.14em] text-black/[0.45]">
-                            {shortcut.operatorTab}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-sm leading-7 text-black/[0.64]">{shortcut.description}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
+          <div className="rounded-[22px] border border-black/10 bg-white/96 px-3 py-3 shadow-[0_12px_28px_rgba(30,25,18,0.05)]">
+            {isTaskPaused && (
+              <div className="mb-3 rounded-[16px] border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                This task is paused. Resume it to send a new message or continue any pending approval flow.
               </div>
             )}
 
             {(voiceInterimTranscript || composerNotice || composerError) && (
-              <div className="mb-4 space-y-3">
+              <div className="mb-3 space-y-2">
                 {voiceInterimTranscript && (
-                  <div className="rounded-[20px] border border-black/10 bg-white/80 px-4 py-3 text-sm text-black/[0.72]">
-                    <span className="mr-2 text-xs uppercase tracking-[0.16em] text-black/[0.45]">Listening</span>
+                  <div className="rounded-[16px] border border-black/10 bg-sand/20 px-3 py-2 text-sm text-black/[0.72]">
+                    <span className="mr-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.45]">Listening</span>
                     {voiceInterimTranscript}
                   </div>
                 )}
@@ -5730,40 +5688,124 @@ export function ChatWorkspace({
                 {composerError && <p className="text-sm text-red-700">{composerError}</p>}
               </div>
             )}
-            <textarea
-              className="min-h-[120px] w-full resize-none bg-transparent text-sm leading-7 outline-none"
-              value={draft}
-              onChange={(event) => {
-                setDraft(event.target.value);
-                setComposerNotice(null);
-              }}
-              disabled={isTaskPaused}
-              placeholder="Ask the supervisor to research, analyze, automate, code, or synthesize a complex task."
-            />
-            <div className="mt-3 flex items-center justify-between gap-4">
-              <div className="space-y-1">
-                <p className="text-xs uppercase tracking-[0.18em] text-black/[0.45]">
-                  Persisted run history + live computer session streaming
-                </p>
-                <p className="text-xs uppercase tracking-[0.14em] text-black/[0.38]">
-                  {composerAttachments.length} attachment{composerAttachments.length === 1 ? "" : "s"} {"|"}{" "}
-                  {selectedComposerShortcuts.length} shortcut{selectedComposerShortcuts.length === 1 ? "" : "s"} {"|"}{" "}
-                  {voiceCapturedInDraft ? "voice dictation used" : voiceSupported ? "voice ready" : "voice unavailable"}
-                </p>
-              </div>
+
+            <div className="flex items-end gap-3">
+              <textarea
+                ref={composerTextareaRef}
+                rows={1}
+                className="max-h-[120px] min-h-[48px] flex-1 resize-none bg-transparent px-1 py-3 text-[15px] leading-6 outline-none placeholder:text-black/[0.34]"
+                value={draft}
+                onChange={(event) => {
+                  setDraft(event.target.value);
+                  setComposerNotice(null);
+                }}
+                onKeyDown={handleComposerKeyDown}
+                disabled={isTaskPaused}
+                placeholder="Ask the supervisor to research, analyze, automate, code, or synthesize a complex task."
+              />
               <button
                 type="submit"
                 disabled={running || !draft.trim() || isTaskPaused}
-                className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-3 text-sm text-white disabled:opacity-60"
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-ink text-white disabled:opacity-60"
+                aria-label={running ? "Run in progress" : "Start run"}
+                title={running ? "Run in progress" : "Start run"}
               >
-                {running ? (
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                  <SendHorizontal className="h-4 w-4" />
-                )}
-                {running ? "Running..." : "Start Run"}
+                {running ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
               </button>
             </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-black/[0.06] pt-2.5">
+              <button
+                type="button"
+                onClick={() => composerFileInputRef.current?.click()}
+                disabled={composerUploading || isTaskPaused}
+                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-xs text-black/[0.72] transition hover:bg-white disabled:opacity-60"
+              >
+                <Paperclip className="h-3.5 w-3.5" />
+                {composerUploading ? "Uploading..." : "Attach"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowComposerAttachments((current) => !current)}
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition",
+                  showComposerAttachments
+                    ? "border-transparent bg-ink text-white"
+                    : "border-black/10 bg-white text-black/[0.72] hover:bg-white"
+                )}
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                Context
+              </button>
+              <button
+                type="button"
+                onClick={toggleVoiceInput}
+                disabled={!voiceSupported || isTaskPaused}
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition disabled:opacity-60",
+                  voiceListening
+                    ? "border-transparent bg-ink text-white"
+                    : "border-black/10 bg-white text-black/[0.72] hover:bg-white"
+                )}
+              >
+                <Mic className="h-3.5 w-3.5" />
+                {voiceListening ? "Stop" : "Voice"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowComposerShortcuts((current) => !current)}
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition",
+                  showComposerShortcuts
+                    ? "border-transparent bg-ink text-white"
+                    : "border-black/10 bg-white text-black/[0.72] hover:bg-white"
+                )}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                Tools
+              </button>
+            </div>
+
+            {(composerAttachments.length > 0 || selectedComposerShortcuts.length > 0 || voiceCapturedInDraft) && (
+              <div className="mt-2 flex flex-wrap gap-2 border-t border-black/[0.06] pt-2.5">
+                {composerAttachments.map((attachment) => (
+                  <div
+                    key={attachment.id}
+                    className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-sand/20 px-3 py-1.5 text-xs text-black/[0.72]"
+                  >
+                    <span className="uppercase tracking-[0.14em] text-black/[0.45]">
+                      {attachmentKindLabel(attachment.kind)}
+                    </span>
+                    <span className="max-w-[180px] truncate">{attachment.label}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeComposerAttachment(attachment.id)}
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-black/[0.06] text-black/[0.6]"
+                      aria-label={`Remove ${attachment.label}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+                {selectedComposerShortcuts.map((shortcut) => (
+                  <button
+                    key={`composer-shortcut-chip-${shortcut.key}`}
+                    type="button"
+                    onClick={() => toggleComposerShortcut(shortcut)}
+                    className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-xs text-black/[0.68] transition hover:bg-sand/45"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {shortcut.label}
+                  </button>
+                ))}
+                {voiceCapturedInDraft && (
+                  <span className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-xs text-black/[0.68]">
+                    <Mic className="h-3.5 w-3.5" />
+                    Voice dictation used
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
         </form>
@@ -5772,7 +5814,7 @@ export function ChatWorkspace({
         )}
       </div>
 
-      <div className="hidden items-stretch justify-center xl:flex">
+      <div className={cn("hidden items-stretch justify-center xl:flex", workbenchExpanded && "xl:hidden")}>
         <button
           type="button"
           onMouseDown={startWorkspaceResize}
@@ -5781,14 +5823,14 @@ export function ChatWorkspace({
             setWorkspacePaneCollapsed(false);
             setOperatorPaneCollapsed(false);
           }}
-          disabled={!isDesktopWorkspace || workspacePaneCollapsed || operatorPaneCollapsed}
+          disabled={!isDesktopWorkspace || workspacePaneCollapsed || operatorPaneCollapsed || workbenchExpanded}
           className={cn(
             "group flex w-4 cursor-col-resize items-center justify-center",
-            (workspacePaneCollapsed || operatorPaneCollapsed) && "cursor-default"
+            (workspacePaneCollapsed || operatorPaneCollapsed || workbenchExpanded) && "cursor-default"
           )}
           aria-label="Resize workspace panes"
           title={
-            workspacePaneCollapsed || operatorPaneCollapsed
+            workspacePaneCollapsed || operatorPaneCollapsed || workbenchExpanded
               ? "Expand both panes to resize"
               : "Drag to resize panes"
           }
@@ -5827,22 +5869,34 @@ export function ChatWorkspace({
             </div>
           </div>
         ) : (
-      <aside className="flex h-full min-h-0 flex-col space-y-3">
+      <aside className="flex h-full min-h-0 flex-col">
         <div className="surface-card-strong flex h-full min-h-0 flex-col overflow-hidden p-0">
-          <div className="border-b border-black/10 px-4 py-4">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-black/[0.45]">Swarm Computer</p>
-                <h2 className="mt-1 font-display text-[1.6rem] leading-none">Workbench</h2>
-                <p className="mt-2 text-sm leading-6 text-black/[0.62]">
-                  All execution, progress, approvals, and file work stay in this right-side operator column.
+          <div className="border-b border-black/10 px-5 py-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-2">
+                <p className="surface-label">Workbench</p>
+                <h2 className="font-display text-[2.15rem] leading-[0.96] text-black/[0.88]">Workbench</h2>
+                <p className="text-base leading-7 text-black/[0.6]">
+                  Browser, terminal, files, previews, and execution state stay here.
                 </p>
               </div>
-              <div className="flex items-start gap-3">
-                <div className="rounded-[20px] bg-white/70 px-4 py-3 text-right text-xs uppercase tracking-[0.16em] text-black/[0.5]">
-                  <div>{computerSessions.length} sessions</div>
-                  <div className="mt-1">{(rootWorkbenchTree?.entries.length ?? 0) || mergedArtifacts.length} tracked items</div>
-                </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <span className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.62]">
+                  {browserSessions.length} browser
+                </span>
+                <span className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.62]">
+                  {terminalSessions.length} terminal
+                </span>
+                <button
+                  type="button"
+                  onClick={toggleWorkbenchExpanded}
+                  className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3.5 py-2 text-sm text-black/[0.72] transition hover:bg-sand/45"
+                  aria-label={workbenchExpanded ? "Exit workbench focus mode" : "Expand workbench"}
+                  title={workbenchExpanded ? "Exit workbench focus mode" : "Expand workbench"}
+                >
+                  {workbenchExpanded ? <X className="h-4 w-4" /> : <ArrowUpRight className="h-4 w-4" />}
+                  {workbenchExpanded ? "Exit focus" : "Expand"}
+                </button>
                 <button
                   type="button"
                   onClick={toggleOperatorPaneCollapsed}
@@ -5854,46 +5908,7 @@ export function ChatWorkspace({
                 </button>
               </div>
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <div className="rounded-full bg-white/80 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.56]">
-                {browserSessions.length} browser
-              </div>
-              <div className="rounded-full bg-white/78 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.56]">
-                {terminalSessions.length} terminal
-              </div>
-              <div className="rounded-full bg-white/80 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.56]">
-                {(rootWorkbenchTree?.entries.length ?? 0) || mergedArtifacts.length} tracked
-              </div>
-              <div className="rounded-full bg-white/80 px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.56]">
-                {runningComputerSessionCount} live
-              </div>
-            </div>
-            <div className="mt-3 rounded-[20px] border border-black/10 bg-white/76 px-4 py-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="surface-label">Linked workflow focus</p>
-                  <p className="mt-1 text-sm font-medium text-black/[0.82]">{workflowFocusTitle}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setOperatorTab(workflowRecommendedTab)}
-                  className="inline-flex items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs uppercase tracking-[0.14em] text-white"
-                >
-                  <MonitorSmartphone className="h-3.5 w-3.5" />
-                  {workflowRecommendedTabLabel}
-                </button>
-              </div>
-              {workflowStateChips.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {workflowStateChips.map((chip) => (
-                    <span key={`operator-${chip}`} className="workflow-chip">
-                      {chip}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-4 flex flex-wrap gap-2">
               {OPERATOR_TAB_OPTIONS.map((tab) => {
                 const Icon = tab.icon;
                 const active = operatorTab === tab.key;
@@ -7362,156 +7377,6 @@ export function ChatWorkspace({
             </AnimatePresence>
           </div>
         </div>
-
-        <div className="surface-card p-5">
-          <div className="flex items-center justify-between gap-3 text-sm font-medium">
-            <div className="flex items-center gap-2">
-              <Layers3 className="h-4 w-4" />
-              Execution board
-            </div>
-            <button
-              type="button"
-              onClick={() => toggleWorkspacePanel("executionBoard")}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white/85 text-black/[0.62] transition hover:bg-white"
-              aria-label={collapsedPanels.executionBoard ? "Expand execution board" : "Collapse execution board"}
-              title={collapsedPanels.executionBoard ? "Expand execution board" : "Collapse execution board"}
-            >
-              <ChevronRight className={cn("h-4 w-4 transition", !collapsedPanels.executionBoard && "rotate-90")} />
-            </button>
-          </div>
-          <AnimatePresence initial={false}>
-            {!collapsedPanels.executionBoard && (
-            <motion.div
-              initial={prefersReducedMotion ? { opacity: 1, height: "auto" } : { opacity: 0, height: 0, y: -10 }}
-              animate={{ opacity: 1, height: "auto", y: 0 }}
-              exit={prefersReducedMotion ? { opacity: 0, height: 0 } : { opacity: 0, height: 0, y: -10 }}
-              transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.24, ease: "easeOut" }}
-              className="mt-4 space-y-3 overflow-hidden"
-            >
-              {displayedPlan.length === 0 && (
-                <div className="rounded-2xl bg-white/75 px-4 py-3 text-sm text-black/70">
-                  Start a run to stream or review the selected thread&apos;s orchestration plan.
-                </div>
-              )}
-              {displayedPlan.map((item, index) => {
-                const runtime = stepsByAgent[item.key];
-                return (
-                  <motion.div layout key={`${item.key}-${index}`} className="rounded-[22px] border border-black/10 bg-white/75 p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.18em] text-black/[0.45]">
-                          Step {item.plan_index !== undefined ? item.plan_index + 1 : index + 1}
-                        </p>
-                        <p className="mt-2 text-sm font-medium text-black/80">{item.key}</p>
-                      </div>
-                      <Badge className={statusBadgeClass(runtime?.status ?? "queued")}>
-                        {statusLabel(runtime?.status ?? "queued")}
-                      </Badge>
-                    </div>
-                    <p className="mt-3 text-sm leading-7 text-black/75">
-                      {runtime?.summary ?? item.objective ?? item.expected_output ?? "Planned agent work."}
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-2 text-xs uppercase tracking-[0.14em] text-black/[0.48]">
-                      <span>{item.execution_mode}</span>
-                      {item.dependencies && item.dependencies.length > 0 && (
-                        <span>depends on {item.dependencies.join(", ")}</span>
-                      )}
-                      {runtime?.model && <span>{runtime.model}</span>}
-                    </div>
-                  </motion.div>
-                );
-              })}
-            </motion.div>
-          )}
-          </AnimatePresence>
-        </div>
-
-        <div className="surface-card p-5">
-          <div className="flex items-center justify-between gap-3 text-sm font-medium">
-            <div className="flex items-center gap-2">
-              <MessageSquareMore className="h-4 w-4" />
-              Run history
-            </div>
-            <button
-              type="button"
-              onClick={() => toggleWorkspacePanel("runHistory")}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white/85 text-black/[0.62] transition hover:bg-white"
-              aria-label={collapsedPanels.runHistory ? "Expand run history" : "Collapse run history"}
-              title={collapsedPanels.runHistory ? "Expand run history" : "Collapse run history"}
-            >
-              <ChevronRight className={cn("h-4 w-4 transition", !collapsedPanels.runHistory && "rotate-90")} />
-            </button>
-          </div>
-          <AnimatePresence initial={false}>
-            {!collapsedPanels.runHistory && (
-            <motion.div
-              initial={prefersReducedMotion ? { opacity: 1, height: "auto" } : { opacity: 0, height: 0, y: -10 }}
-              animate={{ opacity: 1, height: "auto", y: 0 }}
-              exit={prefersReducedMotion ? { opacity: 0, height: 0 } : { opacity: 0, height: 0, y: -10 }}
-              transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.24, ease: "easeOut" }}
-              className="mt-4 space-y-3 overflow-hidden"
-            >
-              {runs.length === 0 && (
-                <div className="rounded-2xl bg-white/75 px-4 py-3 text-sm text-black/70">
-                  Completed and running attempts for the selected thread will appear here.
-                </div>
-              )}
-              {runs.map((run) => (
-                <motion.div layout key={run.id} className="rounded-[22px] border border-black/10 bg-white/75 p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium">{formatRelativeTime(run.created_at)}</p>
-                      <p className="mt-1 text-xs uppercase tracking-[0.14em] text-black/[0.5]">
-                        {run.supervisor_model}
-                      </p>
-                    </div>
-                    <Badge className={statusBadgeClass(run.status)}>{statusLabel(run.status)}</Badge>
-                  </div>
-                  <p className="mt-3 text-sm leading-7 text-black/75">{run.user_message}</p>
-                  {run.summary && (
-                    <p className="mt-3 text-xs uppercase tracking-[0.14em] text-black/[0.5]">
-                      {run.summary}
-                    </p>
-                  )}
-                </motion.div>
-              ))}
-            </motion.div>
-          )}
-          </AnimatePresence>
-        </div>
-
-        {hasLatestSynthesis && (
-          <div className="surface-card p-5">
-            <div className="flex items-center justify-between gap-3 text-sm font-medium">
-              <div className="flex items-center gap-2">
-                <Bot className="h-4 w-4" />
-                Latest synthesis
-              </div>
-              <button
-                type="button"
-                onClick={() => toggleWorkspacePanel("latestSynthesis")}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white/85 text-black/[0.62] transition hover:bg-white"
-                aria-label={collapsedPanels.latestSynthesis ? "Expand latest synthesis" : "Collapse latest synthesis"}
-                title={collapsedPanels.latestSynthesis ? "Expand latest synthesis" : "Collapse latest synthesis"}
-              >
-                <ChevronRight className={cn("h-4 w-4 transition", !collapsedPanels.latestSynthesis && "rotate-90")} />
-              </button>
-            </div>
-            <AnimatePresence initial={false}>
-              {!collapsedPanels.latestSynthesis && (
-                <motion.p
-                  initial={prefersReducedMotion ? { opacity: 1, height: "auto" } : { opacity: 0, height: 0, y: -10 }}
-                  animate={{ opacity: 1, height: "auto", y: 0 }}
-                  exit={prefersReducedMotion ? { opacity: 0, height: 0 } : { opacity: 0, height: 0, y: -10 }}
-                  transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.24, ease: "easeOut" }}
-                  className="mt-4 overflow-hidden text-sm leading-7 text-black/75"
-                >
-                  {String(latestAssistant?.metadata?.summary ?? "")}
-                </motion.p>
-              )}
-            </AnimatePresence>
-          </div>
-        )}
       </aside>
         )}
       </div>

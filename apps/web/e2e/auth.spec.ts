@@ -17,6 +17,6 @@ test("marketing homepage and auth redirect work", async ({ page }) => {
 test("sign in opens the authenticated app shell", async ({ page }) => {
   await signInThroughUi(page);
   await expect(page.getByRole("heading", { name: "Operational AI for high-stakes work." })).toBeVisible();
-  await expect(page.getByText("Task Operating System")).toBeVisible();
+  await expect(page.getByRole("link", { name: "New Task" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Open Chat Workspace" })).toBeVisible();
 });

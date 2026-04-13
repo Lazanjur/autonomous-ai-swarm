@@ -4,11 +4,11 @@
 
 :root {
   color-scheme: light;
-  --swarm-shell-border: rgba(17, 19, 24, 0.1);
-  --swarm-shell-glass: rgba(255, 255, 255, 0.34);
-  --swarm-shell-panel: rgba(255, 255, 255, 0.72);
-  --swarm-shell-panel-strong: rgba(255, 255, 255, 0.86);
-  --swarm-shell-shadow: 0 22px 60px rgba(41, 27, 12, 0.12);
+  --swarm-shell-border: rgba(17, 19, 24, 0.08);
+  --swarm-shell-glass: rgba(255, 255, 255, 0.82);
+  --swarm-shell-panel: rgba(255, 255, 255, 0.92);
+  --swarm-shell-panel-strong: rgba(255, 255, 255, 0.98);
+  --swarm-shell-shadow: 0 18px 46px rgba(30, 25, 18, 0.07);
   --swarm-motion-fast: 180ms;
   --swarm-motion-medium: 260ms;
   --swarm-motion-slow: 420ms;
@@ -16,10 +16,7 @@
 
 body {
   @apply bg-sand text-ink antialiased;
-  background-image:
-    radial-gradient(circle at top left, rgba(178, 132, 81, 0.16), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(15, 58, 50, 0.12), transparent 22%),
-    linear-gradient(180deg, #f8f5ee 0%, #ece4d6 48%, #f7f3ec 100%);
+  background-image: linear-gradient(180deg, #f8f6f1 0%, #f3eee5 100%);
   min-height: 100vh;
   position: relative;
 }
@@ -29,11 +26,8 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.14) 0, rgba(255, 255, 255, 0.14) 1px, transparent 1px, transparent 80px),
-    linear-gradient(rgba(255, 255, 255, 0.12) 0, rgba(255, 255, 255, 0.12) 1px, transparent 1px, transparent 80px);
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.45), transparent 82%);
-  opacity: 0.4;
+  background: radial-gradient(circle at top left, rgba(177, 144, 102, 0.08), transparent 26%);
+  opacity: 0.9;
   z-index: -1;
 }
 
@@ -53,11 +47,11 @@ body::before {
   position: relative;
   overflow: hidden;
   border: 1px solid var(--swarm-shell-border);
-  border-radius: 40px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0%, rgba(247, 241, 229, 0.24) 100%);
+  border-radius: 32px;
+  background: rgba(255, 255, 255, 0.68);
   box-shadow: var(--swarm-shell-shadow);
-  backdrop-filter: blur(20px);
-  min-height: calc(100dvh - 1rem);
+  backdrop-filter: blur(12px);
+  min-height: calc(100dvh - 0.5rem);
 }
 
 .app-shell-frame::before {
@@ -65,37 +59,46 @@ body::before {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    radial-gradient(circle at top right, rgba(255, 255, 255, 0.24), transparent 28%),
-    radial-gradient(circle at bottom left, rgba(15, 58, 50, 0.08), transparent 26%);
-  opacity: 0.9;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.06) 100%);
+  opacity: 1;
 }
 
 .app-shell-grid {
   position: relative;
   z-index: 1;
+  transition: grid-template-columns var(--swarm-motion-medium) ease;
+}
+
+body.workbench-focus-mode .app-shell-grid {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+body.workbench-focus-mode .app-shell-grid > :first-child {
+  display: none !important;
 }
 
 .shell-sidebar {
-  @apply rounded-[34px] border border-black/10 backdrop-blur-xl;
+  @apply rounded-[28px] border border-black/10 backdrop-blur-xl;
   min-height: 0;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.8) 0%, rgba(250, 245, 237, 0.74) 42%, rgba(243, 236, 224, 0.82) 100%);
-  box-shadow: 0 18px 44px rgba(41, 27, 12, 0.1);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 14px 36px rgba(30, 25, 18, 0.06);
+  position: relative;
+  z-index: 2;
 }
 
 .shell-main {
-  @apply min-w-0 rounded-[34px] border border-black/10 backdrop-blur-xl;
+  @apply min-w-0 rounded-[28px] border border-black/10 backdrop-blur-xl;
   min-height: 0;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0.22) 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  position: relative;
+  z-index: 1;
 }
 
 .surface-card {
-  @apply rounded-[26px] border border-black/10 backdrop-blur-lg;
+  @apply rounded-[20px] border border-black/10 backdrop-blur-lg;
   background: var(--swarm-shell-panel);
-  box-shadow: 0 14px 34px rgba(41, 27, 12, 0.06);
+  box-shadow: 0 12px 28px rgba(30, 25, 18, 0.04);
   transition:
     transform var(--swarm-motion-medium) ease,
     box-shadow var(--swarm-motion-medium) ease,
@@ -104,9 +107,9 @@ body::before {
 }
 
 .surface-card-strong {
-  @apply rounded-[28px] border border-black/10 backdrop-blur-xl;
+  @apply rounded-[22px] border border-black/10 backdrop-blur-xl;
   background: var(--swarm-shell-panel-strong);
-  box-shadow: 0 18px 42px rgba(41, 27, 12, 0.08);
+  box-shadow: 0 14px 34px rgba(30, 25, 18, 0.05);
   transition:
     transform var(--swarm-motion-medium) ease,
     box-shadow var(--swarm-motion-medium) ease,
@@ -115,18 +118,17 @@ body::before {
 }
 
 .surface-label {
-  @apply text-[11px] uppercase tracking-[0.2em] text-black/[0.42];
+  @apply text-[12px] uppercase tracking-[0.16em] text-black/[0.45];
 }
 
 .surface-subcopy {
-  @apply text-sm leading-7 text-black/[0.62];
+  @apply text-base leading-7 text-black/[0.62];
 }
 
 .operating-strip {
-  @apply rounded-[26px] border border-black/10 px-5 py-4;
-  background:
-    linear-gradient(120deg, rgba(255, 255, 255, 0.92) 0%, rgba(246, 240, 229, 0.86) 38%, rgba(236, 229, 217, 0.9) 100%);
-  box-shadow: 0 16px 40px rgba(41, 27, 12, 0.07);
+  @apply rounded-[20px] border border-black/10 px-5 py-4;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 28px rgba(30, 25, 18, 0.05);
   transition:
     transform var(--swarm-motion-medium) ease,
     box-shadow var(--swarm-motion-medium) ease,
@@ -138,10 +140,9 @@ body::before {
   position: relative;
   overflow: hidden;
   border: 1px solid rgba(17, 19, 24, 0.1);
-  border-radius: 32px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.84) 0%, rgba(249, 244, 236, 0.82) 100%);
-  box-shadow: 0 20px 48px rgba(41, 27, 12, 0.08);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 14px 32px rgba(30, 25, 18, 0.05);
 }
 
 .workflow-surface::before {
@@ -149,10 +150,8 @@ body::before {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    radial-gradient(circle at top left, rgba(15, 58, 50, 0.08), transparent 32%),
-    radial-gradient(circle at bottom right, rgba(178, 132, 81, 0.12), transparent 34%);
-  opacity: 0.9;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, transparent 100%);
+  opacity: 1;
 }
 
 .workflow-surface-header {
@@ -196,9 +195,9 @@ body::before {
 .workflow-node {
   position: relative;
   border: 1px solid rgba(17, 19, 24, 0.08);
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 14px 32px rgba(41, 27, 12, 0.05);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 24px rgba(30, 25, 18, 0.04);
   padding: 1.25rem;
   transition:
     transform var(--swarm-motion-medium) ease,
@@ -208,9 +207,8 @@ body::before {
 }
 
 .workflow-node-accent {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(246, 240, 229, 0.9) 100%);
-  box-shadow: 0 18px 36px rgba(15, 58, 50, 0.07);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 12px 28px rgba(15, 58, 50, 0.05);
 }
 
 .workflow-chip {
@@ -218,11 +216,11 @@ body::before {
   align-items: center;
   gap: 0.35rem;
   border-radius: 999px;
-  background: rgba(17, 19, 24, 0.05);
+  background: rgba(17, 19, 24, 0.04);
   padding: 0.45rem 0.75rem;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   text-transform: uppercase;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   color: rgba(17, 19, 24, 0.55);
 }
 
@@ -230,6 +228,10 @@ body::before {
   .app-shell-grid {
     height: calc(100dvh - 4rem);
     align-items: stretch;
+  }
+
+  body.left-rail-collapsed:not(.workbench-focus-mode) .app-shell-grid {
+    grid-template-columns: 92px minmax(0, 1fr) !important;
   }
 
   .shell-sidebar,

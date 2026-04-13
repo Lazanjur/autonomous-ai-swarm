@@ -10,7 +10,9 @@ test("chat workspace renders the three-column task rail, chat surface, and opera
   await expect(
     sidebar.getByRole("link", { name: /Deploy Website After Saving All Files/i }).first()
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Swarm workspace" })).toBeVisible();
+  await expect(
+    page.getByPlaceholder("Ask the supervisor to research, analyze, automate, code, or synthesize a complex task.")
+  ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
 
   const operatorPane = page.locator("aside").last();
@@ -19,13 +21,28 @@ test("chat workspace renders the three-column task rail, chat surface, and opera
   await expect(operatorPane.getByRole("button", { name: /^Code$/ })).toBeVisible();
 
   await operatorPane.getByRole("button", { name: /^Browser$/ }).click({ force: true });
-  await expect(page.getByText("Swarm Computer").first()).toBeVisible();
+  await expect(page.getByText("Live browser playback, terminal activity, and generated app previews").first()).toBeVisible();
 
   await operatorPane.getByRole("button", { name: /^Files$/ }).click({ force: true });
   await expect(operatorPane.getByRole("button", { name: /^Files$/ })).toBeVisible();
 
   await operatorPane.getByRole("button", { name: /^Preview$/ }).click({ force: true });
   await expect(page.getByText("Deployment summary", { exact: true })).toBeVisible();
+});
+
+test("left rail collapses into a compact navigation strip and expands back", async ({ page }) => {
+  await signInThroughUi(page);
+  await page.goto("/app/chat");
+
+  const sidebar = page.locator("aside").first();
+
+  await sidebar.getByRole("button", { name: "Collapse left rail" }).click();
+  await expect(sidebar.getByRole("button", { name: "Expand left rail" })).toBeVisible();
+  await expect(sidebar.getByRole("link", { name: "New task" })).toBeVisible();
+
+  await sidebar.getByRole("button", { name: "Expand left rail" }).click();
+  await expect(sidebar.getByRole("button", { name: "Collapse left rail" })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "New project" })).toBeVisible();
 });
 
 test("workspace switching updates the app shell context", async ({ page }) => {
