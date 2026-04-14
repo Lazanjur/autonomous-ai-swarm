@@ -351,6 +351,7 @@ export type ChatProjectCreatePayload = {
   workspace_id: string;
   name: string;
   description?: string | null;
+  connectors?: string[];
 };
 
 export type LivePlanStep = {

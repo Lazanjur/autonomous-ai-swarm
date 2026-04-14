@@ -8,6 +8,7 @@ from app.services.tools.filesystem import WorkspaceFilesystemTool
 from app.services.tools.browser import BrowserAutomationTool
 from app.services.tools.jobs import BackgroundJobTool
 from app.services.tools.integrations import ExternalIntegrationTool
+from app.services.tools.notebooklm import NotebookLMStudioTool
 from app.services.tools.notifications import NotificationDispatchTool
 from app.services.tools.research import WebResearchTool
 from app.services.tools.sandbox import DockerSandboxExecutor
@@ -30,6 +31,7 @@ class ToolRegistry:
         self.notifications = NotificationDispatchTool()
         self.integrations = ExternalIntegrationTool()
         self.jobs = BackgroundJobTool()
+        self.notebooklm = NotebookLMStudioTool()
         self.descriptors = [
             ToolDescriptor(
                 name="web_search",
@@ -50,6 +52,11 @@ class ToolRegistry:
                 name="document_export",
                 description="Persist report bundles, markdown, JSON, CSV, and spreadsheet artifacts to storage.",
                 allowed_agents=("content", "analysis", "coding"),
+            ),
+            ToolDescriptor(
+                name="notebooklm_studio",
+                description="Use NotebookLM for native deliverables such as podcasts, videos, slide decks, quizzes, flashcards, reports, mind maps, infographics, and data tables.",
+                allowed_agents=("content", "analysis"),
             ),
             ToolDescriptor(
                 name="workspace_files",
@@ -138,27 +145,41 @@ class ToolRegistry:
                     )
                 )
         elif agent_key == "content":
-            suggestions.append(
-                await self._run_tool(
-                    "document_export",
-                    self.document.export_markdown("draft-outline", "Artifact scaffold ready."),
-                    event_handler=event_handler,
-                    event_context=event_context,
-                )
-            )
-            if any(token in lowered for token in ("csv", "spreadsheet", "table", "xlsx")):
+            notebooklm_output = self.notebooklm.detect_output_type(prompt)
+            if notebooklm_output:
                 suggestions.append(
                     await self._run_tool(
-                        "document_export",
-                        self.document.export_table(
-                            "report-table-scaffold",
-                            rows=[{"column": "example", "value": "ready"}],
-                            format="csv",
+                        "notebooklm_studio",
+                        self.notebooklm.preview_request(
+                            prompt,
+                            output_type=notebooklm_output,
                         ),
                         event_handler=event_handler,
                         event_context=event_context,
                     )
                 )
+            else:
+                suggestions.append(
+                    await self._run_tool(
+                        "document_export",
+                        self.document.export_markdown("draft-outline", "Artifact scaffold ready."),
+                        event_handler=event_handler,
+                        event_context=event_context,
+                    )
+                )
+                if any(token in lowered for token in ("csv", "spreadsheet", "table", "xlsx")):
+                    suggestions.append(
+                        await self._run_tool(
+                            "document_export",
+                            self.document.export_table(
+                                "report-table-scaffold",
+                                rows=[{"column": "example", "value": "ready"}],
+                                format="csv",
+                            ),
+                            event_handler=event_handler,
+                            event_context=event_context,
+                        )
+                    )
         elif agent_key == "vision_automation":
             suggestions.append(
                 await self._run_tool(
@@ -182,6 +203,19 @@ class ToolRegistry:
                     )
                 )
         elif agent_key == "analysis":
+            notebooklm_output = self.notebooklm.detect_output_type(prompt)
+            if notebooklm_output:
+                suggestions.append(
+                    await self._run_tool(
+                        "notebooklm_studio",
+                        self.notebooklm.preview_request(
+                            prompt,
+                            output_type=notebooklm_output,
+                        ),
+                        event_handler=event_handler,
+                        event_context=event_context,
+                    )
+                )
             if any(token in lowered for token in ("webhook", "slack", "email", "notify", "calendar", "integration", "crm", "api")):
                 suggestions.append(
                     await self._run_tool(
@@ -353,6 +387,48 @@ class ToolRegistry:
                 return await self._rejected_operation(
                     tool_name,
                     f"Unsupported document_export mode `{mode}`.",
+                    payload={"arguments": arguments},
+                )
+
+            if tool_name == "notebooklm_studio":
+                action = str(arguments.get("action") or "preview_request").strip().lower()
+                if action == "capabilities":
+                    return await self.notebooklm.capabilities()
+                if action == "preview_request":
+                    return await self.notebooklm.preview_request(
+                        prompt=str(arguments.get("prompt") or ""),
+                        output_type=str(arguments.get("output_type") or "").strip() or None,
+                    )
+                if action == "generate_deliverable":
+                    source_urls = arguments.get("source_urls")
+                    source_paths = arguments.get("source_paths")
+                    return await self.notebooklm.generate_deliverable(
+                        prompt=str(arguments.get("prompt") or ""),
+                        output_type=str(arguments.get("output_type") or "").strip() or None,
+                        notebook_name=str(arguments.get("notebook_name") or "").strip() or None,
+                        title=str(arguments.get("title") or "").strip() or None,
+                        instructions=str(arguments.get("instructions") or "").strip() or None,
+                        source_urls=[
+                            str(item).strip()
+                            for item in source_urls
+                            if str(item).strip()
+                        ]
+                        if isinstance(source_urls, list)
+                        else None,
+                        source_paths=[
+                            str(item).strip()
+                            for item in source_paths
+                            if str(item).strip()
+                        ]
+                        if isinstance(source_paths, list)
+                        else None,
+                        source_bundle_text=str(arguments.get("source_bundle_text") or "").strip() or None,
+                        output_format=str(arguments.get("output_format") or "").strip() or None,
+                        language=str(arguments.get("language") or "").strip() or None,
+                    )
+                return await self._rejected_operation(
+                    tool_name,
+                    f"Unsupported notebooklm_studio action `{action}`.",
                     payload={"arguments": arguments},
                 )
 

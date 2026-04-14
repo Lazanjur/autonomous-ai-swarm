@@ -263,7 +263,9 @@ class SupervisorOrchestrator:
             settings.supervisor_model,
             (
                 "You are the supervisor for a multi-agent AI swarm. Synthesize agent outputs into one"
-                " cohesive answer with clear sections for outcome, key findings, risks, and next steps."
+                " cohesive answer body that is accurate, useful, and grounded. Focus on the core answer"
+                " itself. Do not add a separate meta section about what you are doing, and do not add"
+                " follow-up options because the product layer will add those automatically."
             ),
             self._build_synthesis_prompt(prompt, step_results, scratchpad, citations),
             metadata={
@@ -272,7 +274,13 @@ class SupervisorOrchestrator:
                 "operation": "synthesis",
             },
         )
-        final_response = self._ensure_citation_references(synthesis.content, citations)
+        final_response = self._compose_autonomous_response(
+            prompt=prompt,
+            content=synthesis.content,
+            step_results=step_results,
+            scratchpad=scratchpad,
+        )
+        final_response = self._ensure_citation_references(final_response, citations)
         grounded_citations = self._finalize_citations(final_response, citations)
 
         return {
@@ -809,6 +817,8 @@ class SupervisorOrchestrator:
             "- Only choose tool_name values from the available tools list.\n"
             "- For web_search use arguments like {\"query\":\"...\",\"max_results\":3}.\n"
             "- For browser_automation use {\"goal\":\"...\"}.\n"
+            "- For notebooklm_studio use action generate_deliverable with prompt, output_type, source_urls, and source_bundle_text.\n"
+            "- For NotebookLM-native deliverables such as audio overviews, podcasts, video overviews, mind maps, reports, flashcards, quizzes, infographics, slide decks, and data tables, prefer notebooklm_studio first unless it already failed or the user explicitly asked for a non-NotebookLM version.\n"
             "- For workspace_files use an action such as list_files or read_text.\n"
             "- For python_sandbox only call it if you can provide concrete Python code.\n"
             "- Output JSON only, with no markdown fences or commentary."
@@ -879,6 +889,31 @@ class SupervisorOrchestrator:
         available_names = {tool["name"] for tool in available_tools}
         lowered_prompt = prompt.lower()
         lowered_raw = raw_content.lower()
+        notebooklm_output = self.tools.notebooklm.detect_output_type(prompt)
+
+        if (
+            notebooklm_output
+            and "notebooklm_studio" in available_names
+            and not self._tool_operation_already_used(
+                tool_context,
+                "notebooklm_studio",
+                "generate_deliverable",
+            )
+            and task.key in {"content", "analysis"}
+            and "another version" not in lowered_prompt
+            and "non-notebooklm" not in lowered_prompt
+        ):
+            return ToolLoopDecision(
+                action="use_tool",
+                reason=f"Heuristic planner fallback selected notebooklm_studio because: {planner_error}",
+                tool_name="notebooklm_studio",
+                arguments=self._build_notebooklm_tool_arguments(
+                    prompt=prompt,
+                    output_type=notebooklm_output,
+                    tool_context=tool_context,
+                ),
+                source="heuristic",
+            )
 
         if (
             "web_search" in available_names
@@ -1004,16 +1039,38 @@ class SupervisorOrchestrator:
             return f"Query `{tool_result.get('query', '')}` returned {len(tool_result.get('results', []))} result(s)."
         if tool_result.get("tool") == "browser_automation":
             return f"Captured {tool_result.get('final_url') or tool_result.get('target_url') or 'browser session'}."
+        if tool_result.get("tool") == "notebooklm_studio":
+            output_type = str(tool_result.get("output_type") or "deliverable").replace("_", " ")
+            artifact_count = len(tool_result.get("artifacts", []))
+            return (
+                f"NotebookLM handled {output_type} generation and produced "
+                f"{artifact_count} artifact{'s' if artifact_count != 1 else ''}."
+            )
         if tool_result.get("tool") == "workspace_files":
             return self._compact_summary(str(tool_result.get("path") or tool_result.get("relative_path") or tool_result))
         if tool_result.get("tool") == "python_sandbox":
             return f"Sandbox return code {tool_result.get('returncode', 'n/a')}."
-        if tool_result.get("tool") in {"document_export", "notification_dispatch", "background_job"}:
+        if tool_result.get("tool") in {
+            "document_export",
+            "notification_dispatch",
+            "background_job",
+        }:
             return self._compact_summary(str(tool_result))
         return self._compact_summary(str(tool_result))
 
     def _tool_already_used(self, tool_context: list[dict[str, Any]], tool_name: str) -> bool:
         return any(str(tool.get("tool")) == tool_name for tool in tool_context)
+
+    def _tool_operation_already_used(
+        self,
+        tool_context: list[dict[str, Any]],
+        tool_name: str,
+        operation: str,
+    ) -> bool:
+        return any(
+            str(tool.get("tool")) == tool_name and str(tool.get("operation")) == operation
+            for tool in tool_context
+        )
 
     def _tool_decision_signature(self, decision: ToolLoopDecision) -> str:
         serialized_arguments = json.dumps(decision.arguments, sort_keys=True, default=str)
@@ -1132,6 +1189,14 @@ class SupervisorOrchestrator:
         feedback: str | None,
     ) -> str:
         feedback_block = f"Supervisor feedback for retry:\n{feedback}\n\n" if feedback else ""
+        notebooklm_block = (
+            "NotebookLM-first guidance:\n"
+            "This request maps to a NotebookLM-native deliverable. Prefer notebooklm_studio before other"
+            " generation routes. Only fall back to non-NotebookLM generation if NotebookLM cannot fulfill"
+            " the request or the user explicitly asks for another version.\n\n"
+            if task.key == "content" and self._is_notebooklm_deliverable_request(prompt)
+            else ""
+        )
         return (
             f"Primary request:\n{prompt}\n\n"
             f"Current agent objective:\n{task.objective}\n\n"
@@ -1140,6 +1205,7 @@ class SupervisorOrchestrator:
             f"Dependencies already completed:\n{task.dependencies or 'None'}\n\n"
             f"Shared scratchpad snapshot:\n{scratchpad_snapshot}\n\n"
             f"Available tool context:\n{tool_context}\n\n"
+            f"{notebooklm_block}"
             f"{feedback_block}"
             "Respond with the following sections:\n"
             "- Outcome\n"
@@ -1237,7 +1303,28 @@ class SupervisorOrchestrator:
         rules = [
             ("research", ("research", "fact", "find", "source", "market", "web", "look up")),
             ("analysis", ("analy", "trend", "forecast", "data", "compare", "risk", "evaluate")),
-            ("content", ("write", "report", "presentation", "deck", "article", "copy", "summarize")),
+            (
+                "content",
+                (
+                    "write",
+                    "report",
+                    "presentation",
+                    "deck",
+                    "article",
+                    "copy",
+                    "summarize",
+                    "podcast",
+                    "audio overview",
+                    "video overview",
+                    "mind map",
+                    "flashcard",
+                    "quiz",
+                    "infographic",
+                    "slide deck",
+                    "data table",
+                    "study guide",
+                ),
+            ),
             ("coding", ("build", "code", "api", "website", "app", "debug", "deploy", "implement")),
             (
                 "vision_automation",
@@ -1263,6 +1350,67 @@ class SupervisorOrchestrator:
                 ordered.append(key)
                 seen.add(key)
         return ordered
+
+    def _is_notebooklm_deliverable_request(self, prompt: str) -> bool:
+        return self.tools.notebooklm.detect_output_type(prompt) is not None
+
+    def _build_notebooklm_tool_arguments(
+        self,
+        *,
+        prompt: str,
+        output_type: str,
+        tool_context: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "action": "generate_deliverable",
+            "prompt": prompt,
+            "output_type": output_type,
+            "instructions": prompt,
+            "source_urls": self._notebooklm_source_urls(tool_context),
+            "source_bundle_text": self._notebooklm_source_bundle(prompt, tool_context),
+        }
+
+    def _notebooklm_source_urls(self, tool_context: list[dict[str, Any]]) -> list[str]:
+        urls: list[str] = []
+        for tool in tool_context:
+            for result in tool.get("results", []) if isinstance(tool.get("results"), list) else []:
+                candidate = str(result.get("url") or result.get("source_uri") or "").strip()
+                if candidate and candidate not in urls:
+                    urls.append(candidate)
+            final_url = str(tool.get("final_url") or tool.get("target_url") or "").strip()
+            if final_url and final_url not in urls:
+                urls.append(final_url)
+        return urls[:8]
+
+    def _notebooklm_source_bundle(
+        self,
+        prompt: str,
+        tool_context: list[dict[str, Any]],
+    ) -> str:
+        lines = ["# Autonomous execution brief", "", "## User request", "", prompt.strip(), ""]
+        if tool_context:
+            lines.extend(["## Tool context", ""])
+        for tool in tool_context[:6]:
+            tool_name = str(tool.get("tool") or "tool").strip() or "tool"
+            lines.append(f"### {tool_name}")
+            summary = self._tool_result_summary(tool)
+            if summary:
+                lines.append(summary)
+            for result in tool.get("results", []) if isinstance(tool.get("results"), list) else []:
+                title = str(result.get("title") or result.get("name") or "").strip()
+                url = str(result.get("url") or result.get("source_uri") or "").strip()
+                excerpt = str(result.get("excerpt") or result.get("snippet") or "").strip()
+                if title or url:
+                    lines.append(f"- {title or url}")
+                if url and url != title:
+                    lines.append(f"  Source: {url}")
+                if excerpt:
+                    lines.append(f"  Note: {excerpt[:280]}")
+            final_url = str(tool.get("final_url") or tool.get("target_url") or "").strip()
+            if final_url:
+                lines.append(f"- Final URL: {final_url}")
+            lines.append("")
+        return "\n".join(lines).strip()
 
     def _keyword_matches(self, prompt: str, keyword: str) -> bool:
         if " " in keyword:
@@ -1425,12 +1573,218 @@ class SupervisorOrchestrator:
             f"Execution scratchpad:\n{self._scratchpad_view(scratchpad)}\n\n"
             f"Agent outputs:\n{rendered}\n\n"
             f"{citation_instructions}"
-            "Return a polished response with:\n"
-            "- Executive summary\n"
-            "- Recommended plan\n"
-            "- Risks and controls\n"
-            "- Suggested artifacts or follow-up tasks\n"
+            "Return only the core answer body for the user.\n"
+            "Make it strong, direct, and solution-oriented.\n"
+            "Cover the best answer, the key reasoning, and the most important risks or caveats.\n"
+            "Do not add a separate 'what I'm doing' section.\n"
+            "Do not add follow-up options.\n"
         )
+
+    def _compose_autonomous_response(
+        self,
+        *,
+        prompt: str,
+        content: str,
+        step_results: list[dict[str, Any]],
+        scratchpad: ExecutionScratchpad,
+    ) -> str:
+        answer_body = content.strip() or (
+            "I completed the run, but the final synthesis came back empty. The safest next move is to rerun the task or"
+            " inspect the execution details in the workbench before acting on it."
+        )
+        notebooklm_summary = self._build_notebooklm_completion_summary(step_results)
+        if notebooklm_summary:
+            if self._looks_like_provider_placeholder(answer_body):
+                answer_body = notebooklm_summary
+            else:
+                answer_body = f"{notebooklm_summary}\n\n{answer_body}"
+        process_lines = self._build_autonomous_process_lines(step_results, scratchpad)
+        follow_up_options = self._build_follow_up_options(
+            prompt,
+            step_results,
+            notebooklm_used=bool(notebooklm_summary),
+        )
+
+        return (
+            "What I'm doing\n"
+            + "\n".join(f"- {line}" for line in process_lines)
+            + "\n\nAnswer\n"
+            + answer_body
+            + "\n\nThree ways to go further\n"
+            + "\n".join(f"{index}. {option}" for index, option in enumerate(follow_up_options, start=1))
+        )
+
+    def _successful_notebooklm_result(self, step_results: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for step in reversed(step_results):
+            for tool in reversed(step.get("tools", [])):
+                if (
+                    str(tool.get("tool") or "") == "notebooklm_studio"
+                    and str(tool.get("status") or "") == "completed"
+                    and str(tool.get("operation") or "") == "generate_deliverable"
+                    and isinstance(tool.get("artifacts"), list)
+                    and tool.get("artifacts")
+                ):
+                    return tool
+        return None
+
+    def _build_notebooklm_completion_summary(self, step_results: list[dict[str, Any]]) -> str | None:
+        tool = self._successful_notebooklm_result(step_results)
+        if tool is None:
+            return None
+
+        output_type = self._humanize_output_type(str(tool.get("output_type") or "deliverable"))
+        notebook_name = str(tool.get("notebook_name") or "NotebookLM notebook").strip()
+        artifacts = [artifact for artifact in tool.get("artifacts", []) if isinstance(artifact, dict)]
+        primary_artifact = artifacts[0] if artifacts else None
+        artifact_name = (
+            str(
+                primary_artifact.get("file_name")
+                or primary_artifact.get("name")
+                or primary_artifact.get("storage_key")
+                or ""
+            ).strip()
+            if primary_artifact
+            else ""
+        )
+        source_count = len(tool.get("sources", []) if isinstance(tool.get("sources"), list) else [])
+        detail_parts = [f"NotebookLM completed the {output_type} run"]
+        if artifact_name:
+            detail_parts.append(f"and produced `{artifact_name}`")
+        detail = " ".join(detail_parts) + "."
+
+        meta_parts: list[str] = []
+        if notebook_name:
+            meta_parts.append(f"Notebook: {notebook_name}")
+        if source_count > 0:
+            meta_parts.append(f"Sources attached: {source_count}")
+        if len(artifacts) > 1:
+            meta_parts.append(f"Artifacts: {len(artifacts)}")
+
+        if meta_parts:
+            return detail + "\n" + "\n".join(f"- {part}" for part in meta_parts)
+        return detail
+
+    def _looks_like_provider_placeholder(self, content: str) -> bool:
+        lowered = content.lower()
+        markers = (
+            "fallback provider generated",
+            "structured response for model",
+            "this is a local development fallback",
+            "mock-local",
+        )
+        return any(marker in lowered for marker in markers)
+
+    def _humanize_output_type(self, output_type: str) -> str:
+        lowered = output_type.strip().lower().replace("-", "_")
+        labels = {
+            "audio_overview": "audio overview",
+            "video_overview": "video overview",
+            "mind_map": "mind map",
+            "slide_deck": "slide deck",
+            "data_table": "data table",
+        }
+        return labels.get(lowered, lowered.replace("_", " "))
+
+    def _build_autonomous_process_lines(
+        self,
+        step_results: list[dict[str, Any]],
+        scratchpad: ExecutionScratchpad,
+    ) -> list[str]:
+        agent_names = [step["agent_name"] for step in step_results if step.get("agent_name")]
+        unique_agents = list(dict.fromkeys(agent_names))
+        tool_count = sum(len(step.get("tools", [])) for step in step_results)
+        grounded_count = len(scratchpad.grounding_sources)
+        notebooklm_result = self._successful_notebooklm_result(step_results)
+
+        lines = [
+            (
+                f"I coordinated {len(unique_agents)} specialist agent"
+                f"{'' if len(unique_agents) == 1 else 's'}: {', '.join(unique_agents)}."
+                if unique_agents
+                else "I coordinated the autonomous run and kept the task moving across the available agent stack."
+            )
+        ]
+        if notebooklm_result is not None:
+            lines.append(
+                "I'm using NotebookLM as the primary generation path for this deliverable and keeping the produced artifact anchored in the workbench."
+            )
+
+        if grounded_count > 0 or tool_count > 0:
+            detail_parts: list[str] = []
+            if grounded_count > 0:
+                detail_parts.append(
+                    f"{grounded_count} grounded source{'s' if grounded_count != 1 else ''}"
+                )
+            if tool_count > 0:
+                detail_parts.append(f"{tool_count} tool result{'s' if tool_count != 1 else ''}")
+            lines.append(
+                "I checked " + " and ".join(detail_parts) + " to keep the answer evidence-aware and execution-aware."
+            )
+        else:
+            lines.append(
+                "I reviewed the available workspace context, task memory, and agent outputs to shape the strongest answer."
+            )
+
+        lines.append(
+            "I’m aiming for the best next step for your query, not just a raw answer, so I’m surfacing the key caveats and the most useful ways to continue."
+        )
+        lines[-1] = (
+            "I'm aiming for the best next step for your query, not just a raw answer, so I'm surfacing the key caveats and the most useful ways to continue."
+        )
+        return lines
+
+    def _build_follow_up_options(
+        self,
+        prompt: str,
+        step_results: list[dict[str, Any]],
+        *,
+        notebooklm_used: bool = False,
+    ) -> list[str]:
+        lowered_prompt = prompt.lower()
+        agent_keys = {str(step.get("agent_key") or "") for step in step_results}
+
+        if notebooklm_used:
+            return [
+                "Refine this deliverable into a second NotebookLM pass with a different tone, audience, or structure.",
+                "Turn the generated output into a companion asset, like a slide deck, quiz, or flashcard set.",
+                "Audit the result against the source material and tighten gaps, citations, or missing sections.",
+            ]
+
+        if "coding" in agent_keys or any(
+            token in lowered_prompt
+            for token in ("code", "build", "implement", "debug", "api", "app", "script", "fix")
+        ):
+            return [
+                "Turn this answer into an implementation plan with concrete steps, files, and priorities.",
+                "Pressure-test the solution by reviewing edge cases, failure modes, and testing strategy.",
+                "Convert the recommendation into code, pseudocode, or a ready-to-ship technical spec.",
+            ]
+
+        if "research" in agent_keys or any(
+            token in lowered_prompt
+            for token in ("latest", "news", "current", "president", "market", "research", "compare", "trend")
+        ):
+            return [
+                "Go deeper on the latest sources and evidence behind this answer.",
+                "Expand this into broader context, timeline, stakeholders, and implications.",
+                "Turn the findings into a concise briefing, comparison table, or decision memo.",
+            ]
+
+        if "analysis" in agent_keys or any(
+            token in lowered_prompt
+            for token in ("strategy", "plan", "decision", "option", "tradeoff", "risk")
+        ):
+            return [
+                "Compare the main alternatives, tradeoffs, and likely outcomes around this topic.",
+                "Stress-test the recommendation against risks, assumptions, and edge cases.",
+                "Turn the answer into a concrete action plan with milestones and owners.",
+            ]
+
+        return [
+            "Go deeper on the evidence, assumptions, or sources behind this answer.",
+            "Explore alternatives, risks, and edge cases around this topic.",
+            "Turn this into a practical next-step plan, checklist, or deliverable.",
+        ]
 
     def _summarize(self, step_results: list[dict[str, Any]]) -> str:
         labels = ", ".join(step["agent_name"] for step in step_results)

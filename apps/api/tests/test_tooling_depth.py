@@ -3,6 +3,7 @@ import pytest
 from app.services.tools.document import DocumentExportTool
 from app.services.tools.filesystem import WorkspaceFilesystemTool
 from app.services.tools.jobs import BackgroundJobTool
+from app.services.tools.notebooklm import NotebookLMStudioTool
 from app.services.tools.notifications import NotificationDispatchTool
 from app.services.tools.registry import ToolRegistry
 from app.services.tools.sandbox import DockerSandboxExecutor
@@ -254,3 +255,62 @@ async def test_registry_exposes_background_job_tool_for_long_running_prompts():
     suggestions = await registry.preflight("analysis", "Queue a long-running batch enrichment over this dataset.")
 
     assert any(suggestion["tool"] == "background_job" for suggestion in suggestions)
+
+
+@pytest.mark.asyncio
+async def test_registry_prefers_notebooklm_preview_for_native_deliverables():
+    registry = ToolRegistry()
+
+    suggestions = await registry.preflight(
+        "content",
+        "Create a podcast audio overview and flashcards from this research package.",
+    )
+
+    assert any(suggestion["tool"] == "notebooklm_studio" for suggestion in suggestions)
+    assert all(suggestion["tool"] != "document_export" for suggestion in suggestions)
+
+
+@pytest.mark.asyncio
+async def test_registry_exposes_notebooklm_capabilities_without_install_requirement():
+    registry = ToolRegistry()
+
+    result = await registry.execute_named(
+        "content",
+        "notebooklm_studio",
+        {"action": "capabilities"},
+    )
+
+    assert result["status"] == "completed"
+    assert "audio_overview" in result["preferred_outputs"]
+
+
+@pytest.mark.asyncio
+async def test_notebooklm_uses_persistent_home_and_run_workspace(monkeypatch, tmp_path):
+    import app.services.tools.notebooklm as notebooklm_module
+
+    storage_root = tmp_path / "notebooklm-home"
+    monkeypatch.setattr(notebooklm_module.settings, "notebooklm_storage_dir", str(storage_root))
+
+    captured: dict[str, str | None] = {}
+
+    class FakeClientClass:
+        @staticmethod
+        def from_storage(storage_dir: str | None = None):
+            captured["storage_dir"] = storage_dir
+            return {"storage_dir": storage_dir}
+
+    class FakeModule:
+        NotebookLMClient = FakeClientClass
+
+    monkeypatch.setattr(notebooklm_module.importlib, "import_module", lambda _: FakeModule())
+
+    tool = NotebookLMStudioTool()
+    factory = tool._load_client_factory()
+    result = await factory()
+
+    assert tool.storage_root == storage_root.resolve()
+    assert tool.run_workspace_root == storage_root.resolve() / "runs"
+    assert tool.run_workspace_root.exists()
+    assert captured["storage_dir"] == str(storage_root.resolve())
+    assert result["storage_dir"] == str(storage_root.resolve())
+    assert notebooklm_module.os.environ["NOTEBOOKLM_HOME"] == str(storage_root.resolve())

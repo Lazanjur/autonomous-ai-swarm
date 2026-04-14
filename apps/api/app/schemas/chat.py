@@ -15,7 +15,7 @@ class ThreadRead(ReadModel):
     project_id: UUID | None = None
     title: str
     status: str
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime
     updated_at: datetime
 
@@ -34,7 +34,7 @@ class MessageRead(ReadModel):
     role: str
     content: str
     citations: list[dict] = Field(default_factory=list)
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime
 
 
@@ -137,7 +137,7 @@ class ProjectRead(ReadModel):
     name: str
     description: str | None = None
     status: str
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime
     updated_at: datetime
 
@@ -151,6 +151,7 @@ class ChatProjectCreateRequest(BaseModel):
     workspace_id: UUID
     name: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=4000)
+    connectors: list[str] = Field(default_factory=list, max_length=12)
 
 
 class ChatTaskRailResponse(BaseModel):
@@ -210,7 +211,7 @@ class SearchDocumentRead(ReadModel):
     source_uri: str | None = None
     mime_type: str | None = None
     status: str
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime
 
 
@@ -222,7 +223,7 @@ class SearchArtifactRead(ReadModel):
     kind: str
     title: str
     storage_key: str
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime
 
 

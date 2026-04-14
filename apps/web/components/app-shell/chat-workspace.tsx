@@ -345,6 +345,30 @@ function formatMessageHoverTime(value: string) {
   }
 }
 
+function formatElapsedLabel(startedAt: string | null | undefined, nowMs: number) {
+  if (!startedAt) {
+    return null;
+  }
+
+  const startedMs = new Date(startedAt).getTime();
+  if (Number.isNaN(startedMs)) {
+    return null;
+  }
+
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
 function attachmentKindLabel(kind: ComposerAttachmentKind) {
   if (kind === "document") {
     return "document";
@@ -1989,6 +2013,8 @@ export function ChatWorkspace({
   });
   const [templateNotice, setTemplateNotice] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [currentRunStartedAt, setCurrentRunStartedAt] = useState<string | null>(null);
+  const [runClock, setRunClock] = useState(() => Date.now());
   const [loadingThread, setLoadingThread] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [livePlan, setLivePlan] = useState<LivePlanStep[]>([]);
@@ -2057,6 +2083,7 @@ export function ChatWorkspace({
   const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
   const [operatorPaneCollapsed, setOperatorPaneCollapsed] = useState(false);
   const [workbenchExpanded, setWorkbenchExpanded] = useState(false);
+  const [workbenchAutoFollow, setWorkbenchAutoFollow] = useState(true);
   const [isResizingWorkspace, setIsResizingWorkspace] = useState(false);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(
     data.selected_thread_id ?? data.threads[0]?.id ?? null
@@ -2078,6 +2105,88 @@ export function ChatWorkspace({
   const workspaceId = data.workspace_id;
   const currentProjectId = searchParams.get("project");
   const prefersReducedMotion = useReducedMotion();
+
+  useEffect(() => {
+    if (wantsNewTask) {
+      return;
+    }
+
+    const nextSelectedThread =
+      data.threads.find((thread) => thread.id === data.selected_thread_id) ?? data.threads[0] ?? null;
+    const nextSelectedThreadMetadata = isRecord(nextSelectedThread?.metadata) ? nextSelectedThread.metadata : {};
+
+    setThreads(data.threads);
+    setSelectedProject(data.selected_project ?? null);
+    setTaskMemory(data.task_memory ?? null);
+    setProjectMemory(data.project_memory ?? null);
+    setLiveApprovalRequests([]);
+    setMessages(data.messages);
+    setRuns(data.runs);
+    setRunSteps(data.run_steps ?? []);
+    setToolCalls(data.tool_calls ?? []);
+    setSelectedTaskTemplateKey(
+      typeof nextSelectedThreadMetadata.selected_template_key === "string"
+        ? nextSelectedThreadMetadata.selected_template_key
+        : null
+    );
+    setTemplateNotice(null);
+    setRunning(false);
+    setLoadingThread(false);
+    setError(null);
+    setLivePlan([]);
+    setExecutionBatches([]);
+    setLiveSteps([]);
+    setActiveBatchIndex(null);
+    setLiveTimeline([]);
+    setLiveSessions({});
+    setLiveArtifacts([]);
+    setLiveWorkbenchActivities([]);
+    setSelectedBrowserSessionId(null);
+    setSelectedTerminalSessionId(null);
+    setSelectedPreviewStorageKey(null);
+    setTerminalStreamMode("combined");
+    setTerminalFollowOutput(true);
+    setComputerNotice(null);
+    setComputerError(null);
+    setWorkbenchTree(initialWorkbenchTree ? { [initialWorkbenchTree.relative_path]: initialWorkbenchTree } : {});
+    setExpandedDirectories({
+      [initialWorkbenchTree?.relative_path ?? "."]: true
+    });
+    setWorkbenchEditors(
+      initialWorkbenchFile
+        ? {
+            [initialWorkbenchFile.relative_path]: {
+              file: initialWorkbenchFile,
+              originalContent: initialWorkbenchFile.content,
+              draftContent: initialWorkbenchFile.content,
+              savedAt: null
+            }
+          }
+        : {}
+    );
+    setWorkbenchTabPaths(initialWorkbenchFile ? [initialWorkbenchFile.relative_path] : []);
+    setSelectedWorkbenchPath(initialWorkbenchFile?.relative_path ?? null);
+    setWorkbenchLoadingPath(null);
+    setWorkbenchError(null);
+    setWorkbenchSavePath(null);
+    setWorkbenchNotice(null);
+    setWorkbenchViewMode("edit");
+    setRepoState(null);
+    setRepoLoading(false);
+    setRepoDiff(null);
+    setRepoDiffLoadingPath(null);
+    setTodoSyncError(null);
+    setTodoSyncNotice(null);
+    setHeaderPanel(null);
+    setHeaderActionLoading(null);
+    setApprovalActionLoading(null);
+    setHeaderError(null);
+    setHeaderNotice(null);
+    setInviteEmail("");
+    setThreadTitleDraft(nextSelectedThread?.title ?? "");
+    setThreadStatusDraft(nextSelectedThread?.status ?? "active");
+    setCurrentThreadId(data.selected_thread_id ?? data.threads[0]?.id ?? null);
+  }, [data, initialWorkbenchFile, initialWorkbenchTree, wantsNewTask]);
 
   const displayedPlan = useMemo(() => {
     if (livePlan.length > 0) {
@@ -2261,6 +2370,22 @@ export function ChatWorkspace({
       null,
     [selectedTerminalSessionId, terminalSessions]
   );
+  const activeLiveStep = useMemo(
+    () =>
+      liveSteps.find((step) => ["running", "active", "in_progress", "escalating"].includes(step.status)) ??
+      liveSteps[liveSteps.length - 1] ??
+      null,
+    [liveSteps]
+  );
+  const activeLiveTool = useMemo(
+    () =>
+      liveTimeline.find(
+        (entry) =>
+          entry.kind === "tool" &&
+          (entry.status === "running" || entry.status === "active" || entry.status === "started")
+      ) ?? null,
+    [liveTimeline]
+  );
   const browserMetrics = useMemo(
     () => sessionMetricEntries(browserSession?.metrics),
     [browserSession?.metrics]
@@ -2294,10 +2419,13 @@ export function ChatWorkspace({
     null;
   const selectedPreviewMode = selectedPreviewArtifact ? artifactPreviewMode(selectedPreviewArtifact) : "none";
   const showComputerOverview = operatorTab === "computer";
-  const showBrowserMode = operatorTab === "computer" || operatorTab === "browser";
-  const showTerminalMode = operatorTab === "computer" || operatorTab === "terminal";
-  const showFilesMode = operatorTab === "computer" || operatorTab === "files";
-  const showPreviewMode = operatorTab === "computer" || operatorTab === "preview";
+  const isWorkbenchFocusLayout = workbenchExpanded && isDesktopWorkspace;
+  const showOverviewCompanionModes = false;
+  const showBrowserMode = showOverviewCompanionModes || operatorTab === "browser";
+  const showTerminalMode = showOverviewCompanionModes || operatorTab === "terminal";
+  const showFilesMode = showOverviewCompanionModes || operatorTab === "files";
+  const showPreviewMode = showOverviewCompanionModes || operatorTab === "preview";
+  const useMinimalWorkbenchOverview = true;
   const rootWorkbenchTree = workbenchTree["."] ?? initialWorkbenchTree ?? null;
   const selectedWorkbenchEditor = selectedWorkbenchPath
     ? workbenchEditors[selectedWorkbenchPath] ?? null
@@ -2434,6 +2562,103 @@ export function ChatWorkspace({
       : null,
     deliverableCount > 0 ? `${deliverableCount} output${deliverableCount === 1 ? "" : "s"}` : null
   ].filter((value): value is string => Boolean(value));
+  const autonomySuggestedTab: OperatorTab = pendingApprovalRequests.length > 0
+    ? "browser"
+    : selectedPreviewArtifact
+      ? "preview"
+      : browserSession
+        ? "browser"
+        : terminalSession
+          ? "terminal"
+          : liveWorkbenchActivities.length > 0
+            ? "code"
+            : workflowRecommendedTab;
+  const autonomyStateLabel = pendingApprovalRequests.length > 0
+    ? "Needs your review"
+    : running
+      ? "Autonomy running"
+      : browserSession || terminalSession || selectedPreviewArtifact
+        ? "Recent execution ready"
+        : "Standing by";
+  const autonomySummary = pendingApprovalRequests.length > 0
+    ? "The agent paused for a sensitive step. Review the handoff here, then approve to continue."
+    : browserSession
+      ? "The browser agent is navigating live pages and keeping the latest screen ready here."
+      : terminalSession
+        ? "The coding agent is running the sandbox and streaming output directly into the workbench."
+        : selectedPreviewArtifact
+          ? "The latest generated app or deliverable is ready to inspect in preview."
+          : liveWorkbenchActivities.length > 0
+            ? "The coding agent is opening files and leaving its current code path in sync here."
+            : "Chat sets the objective. The workbench follows the browser, code, files, and previews as the run evolves.";
+  const autonomyMeta = [
+    workbenchAutoFollow ? "Auto-follow on" : "Auto-follow paused",
+    running ? "Live run" : null,
+    browserSession ? `${browserSessions.length} browser` : null,
+    terminalSession ? `${terminalSessions.length} terminal` : null,
+    selectedPreviewArtifact ? `${previewArtifacts.length} preview` : null,
+    liveWorkbenchActivities.length > 0 ? `${liveWorkbenchActivities.length} file updates` : null
+  ].filter((value): value is string => Boolean(value));
+  const activeWorkbenchTabLabel =
+    OPERATOR_TAB_OPTIONS.find((tab) => tab.key === operatorTab)?.label ?? "Overview";
+  const workbenchFocusHeaderMeta = [
+    activeWorkbenchTabLabel,
+    autonomyStateLabel,
+    browserSessions.length > 0 ? `${browserSessions.length} browser` : null,
+    terminalSessions.length > 0 ? `${terminalSessions.length} terminal` : null,
+    previewArtifacts.length > 0 ? `${previewArtifacts.length} preview` : null
+  ].filter((value): value is string => Boolean(value));
+  const workbenchPrimaryViewportHeight = isWorkbenchFocusLayout ? "calc(100dvh - 8.75rem)" : "min(32dvh, 300px)";
+  const workbenchSecondaryViewportHeight = isWorkbenchFocusLayout ? "calc(100dvh - 11.5rem)" : "min(16dvh, 168px)";
+  const liveRunElapsedLabel = formatElapsedLabel(currentRunStartedAt, runClock);
+  const activeCommandSession = terminalSessions.find((session) => session.status === "running") ?? null;
+  const activeCommandElapsedLabel = formatElapsedLabel(activeCommandSession?.created_at ?? null, runClock);
+  const liveRunObjective = running
+    ? compactText(
+        activeLiveStep?.objective ||
+          activeChecklistItem?.summary ||
+          activeChecklistItem?.title ||
+          activeLiveTool?.summary ||
+          activeLiveTool?.title ||
+          latestRun?.user_message ||
+          activeThread?.last_message_preview ||
+          "Reviewing your request and choosing the best execution path.",
+        220
+      )
+    : null;
+  const liveRunStatusText = activeCommandSession
+    ? `Running command${activeCommandElapsedLabel ? ` for ${activeCommandElapsedLabel}` : ""}`
+    : "Thinking";
+  const workbenchFocusPrimaryLabel =
+    autonomySuggestedTab === "browser"
+      ? "Live browser"
+      : autonomySuggestedTab === "terminal"
+        ? "Live terminal"
+        : autonomySuggestedTab === "preview"
+          ? "Generated preview"
+          : autonomySuggestedTab === "code"
+            ? "Code workspace"
+            : autonomySuggestedTab === "files"
+              ? "Workspace files"
+              : "Operator surface";
+  const workbenchFocusPrimaryCaption =
+    autonomySuggestedTab === "browser"
+      ? browserSession?.final_url || browserSession?.target_url || "Watching the latest browser step."
+      : autonomySuggestedTab === "terminal"
+        ? (terminalSession?.command ?? []).join(" ") || "Following the coding sandbox output."
+        : autonomySuggestedTab === "preview"
+          ? selectedPreviewArtifact
+            ? artifactLabel(selectedPreviewArtifact)
+            : "Waiting for a previewable output."
+          : autonomySuggestedTab === "code"
+            ? selectedWorkbenchFile?.relative_path || "Following the coding agent's current file focus."
+            : rootWorkbenchTree?.relative_path || "Tracking workspace files and recent file activity.";
+  const workbenchFocusPrimaryStats = [
+    browserSession ? `${browserSessions.length} browser session${browserSessions.length === 1 ? "" : "s"}` : null,
+    terminalSession ? `${terminalSessions.length} terminal session${terminalSessions.length === 1 ? "" : "s"}` : null,
+    liveWorkbenchActivities.length > 0 ? `${liveWorkbenchActivities.length} tracked file update${liveWorkbenchActivities.length === 1 ? "" : "s"}` : null,
+    selectedPreviewArtifact ? `${previewArtifacts.length} preview artifact${previewArtifacts.length === 1 ? "" : "s"}` : null
+  ].filter((value): value is string => Boolean(value));
   const operatingFlowStages = useMemo(
     () =>
       [
@@ -2568,6 +2793,19 @@ export function ChatWorkspace({
       }
       return next;
     });
+  }
+
+  function activateOperatorTab(nextTab: OperatorTab, options?: { manual?: boolean }) {
+    const manual = options?.manual ?? true;
+    if (manual) {
+      setWorkbenchAutoFollow(false);
+    }
+    setOperatorTab(nextTab);
+  }
+
+  function resumeWorkbenchAutonomy(preferredTab?: OperatorTab) {
+    setWorkbenchAutoFollow(true);
+    setOperatorTab(preferredTab ?? autonomySuggestedTab);
   }
 
   function startWorkspaceResize(event: ReactMouseEvent<HTMLButtonElement>) {
@@ -3467,6 +3705,7 @@ export function ChatWorkspace({
         workspacePaneCollapsed?: boolean;
         operatorPaneCollapsed?: boolean;
         workbenchExpanded?: boolean;
+        workbenchAutoFollow?: boolean;
       };
       if (typeof parsed.workspacePaneWidth === "number") {
         setWorkspacePaneWidth(
@@ -3477,9 +3716,12 @@ export function ChatWorkspace({
       const nextOperatorCollapsed =
         nextWorkspaceCollapsed ? false : Boolean(parsed.operatorPaneCollapsed);
       const nextWorkbenchExpanded = Boolean(parsed.workbenchExpanded);
+      const nextWorkbenchAutoFollow =
+        typeof parsed.workbenchAutoFollow === "boolean" ? parsed.workbenchAutoFollow : true;
       setWorkspacePaneCollapsed(nextWorkbenchExpanded ? false : nextWorkspaceCollapsed);
       setOperatorPaneCollapsed(nextWorkbenchExpanded ? false : nextOperatorCollapsed);
       setWorkbenchExpanded(nextWorkbenchExpanded);
+      setWorkbenchAutoFollow(nextWorkbenchAutoFollow);
     } catch {
       return;
     }
@@ -3492,10 +3734,11 @@ export function ChatWorkspace({
         workspacePaneWidth,
         workspacePaneCollapsed,
         operatorPaneCollapsed,
-        workbenchExpanded
+        workbenchExpanded,
+        workbenchAutoFollow
       })
     );
-  }, [operatorPaneCollapsed, workbenchExpanded, workspacePaneCollapsed, workspacePaneWidth]);
+  }, [operatorPaneCollapsed, workbenchAutoFollow, workbenchExpanded, workspacePaneCollapsed, workspacePaneWidth]);
 
   useEffect(() => {
     if (
@@ -3606,11 +3849,65 @@ export function ChatWorkspace({
   }, [previewArtifacts]);
 
   useEffect(() => {
+    if (!workbenchAutoFollow) {
+      return;
+    }
+    if (pendingApprovalRequests.length > 0) {
+      setOperatorTab(browserSession ? "browser" : "computer");
+      return;
+    }
+    if (selectedPreviewArtifact) {
+      setOperatorTab("preview");
+      return;
+    }
+    if (browserSession) {
+      setOperatorTab("browser");
+      return;
+    }
+    if (terminalSession) {
+      setOperatorTab("terminal");
+      return;
+    }
+    if (liveWorkbenchActivities.length > 0) {
+      setOperatorTab("code");
+      return;
+    }
+    if (running || runningComputerSessionCount > 0) {
+      setOperatorTab("computer");
+    }
+  }, [
+    browserSession,
+    liveWorkbenchActivities.length,
+    pendingApprovalRequests.length,
+    running,
+    runningComputerSessionCount,
+    selectedPreviewArtifact,
+    terminalSession,
+    workbenchAutoFollow
+  ]);
+
+  useEffect(() => {
     if (!terminalFollowOutput || !terminalOutputRef.current) {
       return;
     }
     terminalOutputRef.current.scrollTop = terminalOutputRef.current.scrollHeight;
   }, [terminalFollowOutput, terminalOutput, terminalSession?.status]);
+
+  useEffect(() => {
+    if (!running && activeCommandSession?.status !== "running") {
+      return;
+    }
+
+    setRunClock(Date.now());
+    const intervalId = window.setInterval(() => setRunClock(Date.now()), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [activeCommandSession?.status, running]);
+
+  useEffect(() => {
+    if (!running && currentRunStartedAt) {
+      setCurrentRunStartedAt(null);
+    }
+  }, [currentRunStartedAt, running]);
 
   useEffect(() => {
     if (!selectedWorkbenchFile?.relative_path || !isTodoCandidateFile(selectedWorkbenchFile.relative_path)) {
@@ -4044,6 +4341,7 @@ export function ChatWorkspace({
     setTodoSyncError(null);
     setTodoSyncNotice(null);
     setRunning(true);
+    setCurrentRunStartedAt(new Date().toISOString());
     speechRecognitionRef.current?.stop();
     setVoiceListening(false);
     setLivePlan([]);
@@ -4610,7 +4908,7 @@ export function ChatWorkspace({
                     key={stage.key}
                     layout
                     type="button"
-                    onClick={() => setOperatorTab(stage.tab)}
+                    onClick={() => activateOperatorTab(stage.tab)}
                     className={cn(
                       "rounded-full border px-3 py-2 text-left text-xs uppercase tracking-[0.14em] transition",
                       stage.status === "complete"
@@ -4634,8 +4932,8 @@ export function ChatWorkspace({
             <div className="flex flex-wrap items-center gap-2">
               <p className="surface-label">Chat</p>
               {running ? (
-                <span className="rounded-full bg-black text-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em]">
-                  Live run
+                <span className="text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
+                  Working for {liveRunElapsedLabel ?? "0s"}
                 </span>
               ) : activeThread ? (
                 <span className="rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-black/[0.46]">
@@ -4878,7 +5176,7 @@ export function ChatWorkspace({
             </div>
             <button
               type="button"
-              onClick={() => setOperatorTab(workflowRecommendedTab)}
+              onClick={() => activateOperatorTab(workflowRecommendedTab)}
               className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/85 px-4 py-2 text-sm text-black/[0.72] transition hover:bg-white"
             >
               <MonitorSmartphone className="h-4 w-4" />
@@ -4960,7 +5258,7 @@ export function ChatWorkspace({
                 <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     type="button"
-                    onClick={() => setOperatorTab(workflowRecommendedTab)}
+                    onClick={() => activateOperatorTab(workflowRecommendedTab)}
                     className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white"
                   >
                     <MonitorSmartphone className="h-4 w-4" />
@@ -4968,7 +5266,7 @@ export function ChatWorkspace({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setOperatorTab("timeline")}
+                    onClick={() => activateOperatorTab("timeline")}
                     className="rounded-full border border-black/10 bg-white/85 px-4 py-2 text-sm text-black/[0.72] transition hover:bg-white"
                   >
                     View live timeline
@@ -5468,6 +5766,21 @@ export function ChatWorkspace({
               );
             })()
           ))}
+          {running && (
+            <article className="flex justify-start">
+              <div className="max-w-[min(42rem,100%)] px-1 py-0.5">
+                <p className="text-[12px] leading-5 text-black/[0.42]">
+                  Working for {liveRunElapsedLabel ?? "0s"}
+                </p>
+                <p className="mt-0.5 text-[14px] leading-6 text-black/[0.8] md:text-[15px]">
+                  {liveRunObjective || "Reviewing your request and choosing the best execution path."}
+                </p>
+                <p className="mt-0.5 text-[12px] leading-5 text-black/[0.46]">
+                  {liveRunStatusText}
+                </p>
+              </div>
+            </article>
+          )}
         </div>
 
         {taskTemplates.length > 0 && (
@@ -5919,78 +6232,152 @@ export function ChatWorkspace({
           </div>
         ) : (
       <aside className="flex h-full min-h-0 flex-col">
-        <div className="surface-card-strong flex h-full min-h-0 flex-col overflow-hidden p-0">
-          <div className="border-b border-black/10 px-5 py-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="space-y-2">
-                <p className="surface-label">Workbench</p>
-                <h2 className="font-display text-[2.15rem] leading-[0.96] text-black/[0.88]">Workbench</h2>
-                <p className="text-base leading-7 text-black/[0.6]">
-                  Browser, terminal, files, previews, and execution state stay here.
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <span className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.62]">
-                  {browserSessions.length} browser
-                </span>
-                <span className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.62]">
-                  {terminalSessions.length} terminal
-                </span>
-                <button
-                  type="button"
-                  onClick={toggleWorkbenchExpanded}
-                  className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3.5 py-2 text-sm text-black/[0.72] transition hover:bg-sand/45"
-                  aria-label={workbenchExpanded ? "Exit workbench focus mode" : "Expand workbench"}
-                  title={workbenchExpanded ? "Exit workbench focus mode" : "Expand workbench"}
-                >
-                  {workbenchExpanded ? <X className="h-4 w-4" /> : <ArrowUpRight className="h-4 w-4" />}
-                  {workbenchExpanded ? "Exit focus" : "Expand"}
-                </button>
-                <button
-                  type="button"
-                  onClick={toggleOperatorPaneCollapsed}
-                  className="hidden h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45 xl:inline-flex"
-                  aria-label="Collapse operator canvas"
-                  title="Collapse operator canvas"
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {OPERATOR_TAB_OPTIONS.map((tab) => {
-                const Icon = tab.icon;
-                const active = operatorTab === tab.key;
-                return (
-                  <motion.button
-                    layout
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setOperatorTab(tab.key as OperatorTab)}
-                    className={cn(
-                      "relative inline-flex items-center gap-2 overflow-hidden rounded-full border border-black/10 px-3 py-2 text-xs uppercase tracking-[0.14em] transition",
-                      active ? "text-white" : "bg-white/70 text-black/[0.7] hover:bg-white"
-                    )}
-                    whileHover={prefersReducedMotion ? undefined : { y: -1 }}
-                    transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 250, damping: 24 }}
-                  >
-                    {active && (
-                      <motion.span
-                        layoutId={prefersReducedMotion ? undefined : "operator-tab-pill"}
-                        className="absolute inset-0 rounded-full bg-ink"
-                        transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 280, damping: 28 }}
-                      />
-                    )}
-                    <span className="relative z-10 inline-flex items-center gap-2">
-                      <Icon className="h-3.5 w-3.5" />
-                      {tab.label}
-                    </span>
-                  </motion.button>
-                );
-              })}
-            </div>
+        <div
+          className={cn(
+            "flex h-full min-h-0 flex-col overflow-hidden bg-white/96",
+            isWorkbenchFocusLayout ? "" : "border-l border-black/8"
+          )}
+        >
+          <div className={cn("border-b border-black/10", isWorkbenchFocusLayout ? "px-3 py-2" : "px-4 py-3")}>
+            {isWorkbenchFocusLayout ? (
+              <>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="surface-label">Workbench</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
+                      {workbenchFocusHeaderMeta.map((item) => (
+                        <span key={item}>{item}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] uppercase tracking-[0.16em] text-black/[0.5]">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        workbenchAutoFollow
+                          ? setWorkbenchAutoFollow(false)
+                          : resumeWorkbenchAutonomy(autonomySuggestedTab)
+                      }
+                      className="inline-flex items-center gap-1.5 text-black/[0.66] transition hover:text-black"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      {workbenchAutoFollow ? "Pause auto-follow" : "Resume auto-follow"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleWorkbenchExpanded}
+                      className="inline-flex items-center gap-1.5 text-black/[0.66] transition hover:text-black"
+                      aria-label={workbenchExpanded ? "Exit workbench focus mode" : "Expand workbench"}
+                      title={workbenchExpanded ? "Exit workbench focus mode" : "Expand workbench"}
+                    >
+                      {workbenchExpanded ? <X className="h-3.5 w-3.5" /> : <ArrowUpRight className="h-3.5 w-3.5" />}
+                      {workbenchExpanded ? "Close" : "Expand"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleOperatorPaneCollapsed}
+                      className="hidden text-black/[0.66] transition hover:text-black xl:inline-flex"
+                      aria-label="Collapse operator canvas"
+                      title="Collapse operator canvas"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center gap-4 overflow-x-auto pb-0.5">
+                  {OPERATOR_TAB_OPTIONS.map((tab) => {
+                    const Icon = tab.icon;
+                    const active = operatorTab === tab.key;
+                    return (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        onClick={() => activateOperatorTab(tab.key as OperatorTab)}
+                        className={cn(
+                          "inline-flex shrink-0 items-center gap-1.5 border-b pb-1 text-[11px] uppercase tracking-[0.16em] transition",
+                          active
+                            ? "border-black text-black/[0.9]"
+                            : "border-transparent text-black/[0.42] hover:text-black/[0.72]"
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/8 pb-1.5">
+                  <div className="min-w-0">
+                    <p className="surface-label">Workbench</p>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
+                      {(workbenchFocusHeaderMeta.length > 0
+                        ? workbenchFocusHeaderMeta
+                        : ["Autonomous execution", "Browser, code, files, preview"]).map((item) => (
+                        <span key={item}>{item}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.52]">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        workbenchAutoFollow
+                          ? setWorkbenchAutoFollow(false)
+                          : resumeWorkbenchAutonomy(autonomySuggestedTab)
+                      }
+                      className="transition hover:text-black"
+                    >
+                      {workbenchAutoFollow ? "Pause auto-follow" : "Resume auto-follow"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleWorkbenchExpanded}
+                      className="transition hover:text-black"
+                      aria-label={workbenchExpanded ? "Exit workbench focus mode" : "Expand workbench"}
+                      title={workbenchExpanded ? "Exit workbench focus mode" : "Expand workbench"}
+                    >
+                      {workbenchExpanded ? "Exit focus" : "Expand"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleOperatorPaneCollapsed}
+                      className="hidden transition hover:text-black xl:inline-flex"
+                      aria-label="Collapse operator canvas"
+                      title="Collapse operator canvas"
+                    >
+                      Collapse
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1.5">
+                  {OPERATOR_TAB_OPTIONS.map((tab) => {
+                    const Icon = tab.icon;
+                    const active = operatorTab === tab.key;
+                    return (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        onClick={() => activateOperatorTab(tab.key as OperatorTab)}
+                        className={cn(
+                          "inline-flex shrink-0 items-center gap-1.5 border-b pb-1 text-[11px] uppercase tracking-[0.16em] transition",
+                          active
+                            ? "border-black text-black/[0.9]"
+                            : "border-transparent text-black/[0.42] hover:text-black/[0.72]"
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div className={cn("min-h-0 flex-1 overflow-y-auto", isWorkbenchFocusLayout ? "p-2" : "px-4 py-3")}>
             <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={operatorTab}
@@ -5998,13 +6385,63 @@ export function ChatWorkspace({
                 animate={{ opacity: 1, y: 0 }}
                 exit={prefersReducedMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: -14 }}
                 transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", stiffness: 210, damping: 24 }}
-                className="space-y-5"
+                className={cn("space-y-3", isWorkbenchFocusLayout && "space-y-3")}
               >
+            <div className="border-b border-black/8 pb-1.5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className={cn(isWorkbenchFocusLayout ? "max-w-xl" : "max-w-2xl")}>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-black/[0.42]">Autonomy</p>
+                  <p className="mt-1 text-[13px] font-medium text-black/[0.82]">{autonomyStateLabel}</p>
+                  <p className="mt-1 text-[13px] leading-6 text-black/[0.58]">{compactText(autonomySummary, 180)}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.52]">
+                  <span className="text-black/[0.62]">{autonomyStateLabel}</span>
+                  {pendingApprovalRequests.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => activateOperatorTab(browserSession ? "browser" : "computer")}
+                      className="inline-flex items-center gap-2 transition hover:text-black"
+                    >
+                      <ShieldAlert className="h-3.5 w-3.5" />
+                      Review handoff
+                    </button>
+                  ) : browserSession?.final_url ? (
+                    <a
+                      href={browserSession.final_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 transition hover:text-black"
+                    >
+                      <ArrowUpRight className="h-3.5 w-3.5" />
+                      Open live page
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => activateOperatorTab(autonomySuggestedTab)}
+                      className="inline-flex items-center gap-2 transition hover:text-black"
+                    >
+                      <MonitorSmartphone className="h-3.5 w-3.5" />
+                      Open {OPERATOR_TAB_OPTIONS.find((tab) => tab.key === autonomySuggestedTab)?.label ?? "surface"}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {autonomyMeta.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] uppercase tracking-[0.16em] text-black/[0.44]">
+                  {autonomyMeta.map((item) => (
+                    <span key={item}>
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
             {operatorTab === "code" && (
-              <div className="space-y-5">
-                <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+              <div className={cn("space-y-5", isWorkbenchFocusLayout && "space-y-4")}>
+                <div className={cn("grid gap-4", isWorkbenchFocusLayout ? "xl:grid-cols-[248px_minmax(0,1fr)]" : "xl:grid-cols-[280px_minmax(0,1fr)]")}>
                   <div className="space-y-4">
-                    <div className="rounded-[26px] border border-black/10 bg-white/80 p-4">
+                    <div className={cn("rounded-[24px] border border-black/10 bg-white/80", isWorkbenchFocusLayout ? "p-3.5" : "p-4")}>
                       <div className="mb-4 flex items-start justify-between gap-3">
                         <div>
                           <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
@@ -6031,7 +6468,10 @@ export function ChatWorkspace({
                       )}
 
                       {rootWorkbenchTree ? (
-                        <div className="space-y-2">
+                        <div
+                          className="space-y-2 overflow-y-auto"
+                          style={workbenchPrimaryViewportHeight ? { maxHeight: workbenchPrimaryViewportHeight } : undefined}
+                        >
                           {workbenchLoadingPath === "." && !workbenchTree["."] ? (
                             <div className="rounded-2xl bg-sand/55 px-3 py-3 text-sm text-black/[0.58]">
                               Loading workspace tree...
@@ -6047,7 +6487,7 @@ export function ChatWorkspace({
                       )}
                     </div>
 
-                    <div className="rounded-[26px] border border-black/10 bg-white/80 p-4">
+                    <div className={cn("rounded-[24px] border border-black/10 bg-white/80", isWorkbenchFocusLayout ? "p-3.5" : "p-4")}>
                       <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
                         <Activity className="h-4 w-4" />
                         Agent file focus
@@ -6056,7 +6496,10 @@ export function ChatWorkspace({
                         Live coding-agent browsing and edit tracking
                       </p>
 
-                      <div className="mt-4 space-y-2">
+                      <div
+                        className="mt-4 space-y-2 overflow-y-auto"
+                        style={workbenchSecondaryViewportHeight ? { maxHeight: workbenchSecondaryViewportHeight } : undefined}
+                      >
                         {liveWorkbenchActivities.length > 0 ? (
                           liveWorkbenchActivities.slice(0, 6).map((activity) => (
                             <button
@@ -6104,7 +6547,7 @@ export function ChatWorkspace({
                       </div>
                     </div>
 
-                    <div className="rounded-[26px] border border-black/10 bg-white/80 p-4">
+                    <div className={cn("rounded-[24px] border border-black/10 bg-white/80", isWorkbenchFocusLayout ? "p-3.5" : "p-4")}>
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
@@ -6140,7 +6583,10 @@ export function ChatWorkspace({
                               {repoState.untracked_count} untracked
                             </span>
                           </div>
-                          <div className="mt-4 space-y-2">
+                          <div
+                            className="mt-4 space-y-2 overflow-y-auto"
+                            style={workbenchSecondaryViewportHeight ? { maxHeight: workbenchSecondaryViewportHeight } : undefined}
+                          >
                             {repoState.changed_files.length > 0 ? (
                               repoState.changed_files.slice(0, 8).map((item) => (
                                 <button
@@ -6177,8 +6623,8 @@ export function ChatWorkspace({
                     </div>
                   </div>
 
-                  <div className="rounded-[26px] border border-black/10 bg-white/82 p-4">
-                    <div className="flex flex-wrap gap-2 border-b border-black/10 pb-4">
+                  <div className={cn("rounded-[24px] border border-black/10 bg-white/82", isWorkbenchFocusLayout ? "p-3.5" : "p-4")}>
+                    <div className={cn("flex flex-wrap gap-2 border-b border-black/10", isWorkbenchFocusLayout ? "pb-3" : "pb-4")}>
                       {openWorkbenchTabs.length > 0 ? (
                         openWorkbenchTabs.map((file) => {
                           const editorState = workbenchEditors[file.relative_path];
@@ -6219,7 +6665,7 @@ export function ChatWorkspace({
                       )}
                     </div>
 
-                    <div className="mt-4 flex flex-wrap items-start justify-between gap-3 border-b border-black/10 pb-4">
+                    <div className={cn("mt-4 flex flex-wrap items-start justify-between gap-3 border-b border-black/10", isWorkbenchFocusLayout ? "pb-3" : "pb-4")}>
                       <div>
                         <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
                           <Code2 className="h-4 w-4" />
@@ -6352,7 +6798,10 @@ export function ChatWorkspace({
                         {workbenchViewMode === "edit" && (
                           <div className="mt-4 overflow-hidden rounded-[24px] border border-black/10 bg-[#101114]">
                             <div className="grid grid-cols-[56px_minmax(0,1fr)]">
-                              <div className="max-h-[620px] overflow-hidden border-r border-white/8 bg-black/20 px-3 py-4 text-right font-mono text-xs leading-6 text-white/28">
+                              <div
+                                className="overflow-hidden border-r border-white/8 bg-black/20 px-3 py-4 text-right font-mono text-xs leading-6 text-white/28"
+                                style={{ maxHeight: workbenchPrimaryViewportHeight ?? "620px" }}
+                              >
                                 {selectedWorkbenchDraft.split("\n").map((_, index) => (
                                   <div key={`${selectedWorkbenchFile.relative_path}-ln-${index}`}>{index + 1}</div>
                                 ))}
@@ -6363,7 +6812,8 @@ export function ChatWorkspace({
                                   updateWorkbenchDraft(selectedWorkbenchFile.relative_path, event.target.value)
                                 }
                                 spellCheck={false}
-                                className="min-h-[620px] w-full resize-none bg-transparent px-4 py-4 font-mono text-xs leading-6 text-white/88 outline-none"
+                                className="w-full resize-none bg-transparent px-4 py-4 font-mono text-xs leading-6 text-white/88 outline-none"
+                                style={{ minHeight: workbenchPrimaryViewportHeight ?? "620px" }}
                               />
                             </div>
                           </div>
@@ -6375,7 +6825,10 @@ export function ChatWorkspace({
                               <div className="border-b border-black/10 px-4 py-3 text-xs uppercase tracking-[0.16em] text-black/[0.5]">
                                 Last saved
                               </div>
-                              <pre className="max-h-[620px] overflow-auto bg-[#101114] px-4 py-4 font-mono text-xs leading-6 text-white/78">
+                              <pre
+                                className="overflow-auto bg-[#101114] px-4 py-4 font-mono text-xs leading-6 text-white/78"
+                                style={{ maxHeight: workbenchPrimaryViewportHeight ?? "620px" }}
+                              >
                                 {selectedWorkbenchEditor?.originalContent || " "}
                               </pre>
                             </div>
@@ -6383,7 +6836,10 @@ export function ChatWorkspace({
                               <div className="border-b border-black/10 px-4 py-3 text-xs uppercase tracking-[0.16em] text-black/[0.5]">
                                 Current draft
                               </div>
-                              <pre className="max-h-[620px] overflow-auto bg-[#101114] px-4 py-4 font-mono text-xs leading-6 text-white/88">
+                              <pre
+                                className="overflow-auto bg-[#101114] px-4 py-4 font-mono text-xs leading-6 text-white/88"
+                                style={{ maxHeight: workbenchPrimaryViewportHeight ?? "620px" }}
+                              >
                                 {selectedWorkbenchDraft || " "}
                               </pre>
                             </div>
@@ -6395,7 +6851,10 @@ export function ChatWorkspace({
                             <div className="border-b border-white/10 px-4 py-3 text-xs uppercase tracking-[0.16em] text-white/55">
                               Git comparison against {repoDiff?.compare_target ?? "HEAD"}
                             </div>
-                            <div className="max-h-[620px] overflow-auto px-4 py-4 font-mono text-xs leading-6 text-white/82">
+                            <div
+                              className="overflow-auto px-4 py-4 font-mono text-xs leading-6 text-white/82"
+                              style={{ maxHeight: workbenchPrimaryViewportHeight ?? "620px" }}
+                            >
                               {repoDiff && repoDiff.relative_path === selectedWorkbenchFile.relative_path ? (
                                 repoDiff.diff ? (
                                   <pre className="whitespace-pre-wrap">{repoDiff.diff}</pre>
@@ -6422,22 +6881,392 @@ export function ChatWorkspace({
             )}
 
             {["computer", "browser", "terminal", "files", "preview"].includes(operatorTab) && (
-              <div className="space-y-5">
+              <div className="space-y-3">
                 {(computerError || computerNotice) && (
                   <div
                     className={cn(
-                      "rounded-[22px] border px-4 py-3 text-sm",
+                      "border-l px-3 py-1 text-[13px] leading-6",
                       computerError
-                        ? "border-red-200 bg-red-50 text-red-900"
-                        : "border-emerald-200 bg-emerald-50 text-emerald-900"
+                        ? "border-red-300 text-red-800"
+                        : "border-emerald-300 text-emerald-800"
                     )}
                   >
                     {computerError ?? computerNotice}
                   </div>
                 )}
 
-                {showComputerOverview && (
-                  <div className="rounded-[28px] border border-black/10 bg-white/82 p-5">
+                {showComputerOverview &&
+                  (useMinimalWorkbenchOverview || isWorkbenchFocusLayout ? (
+                    <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_176px]">
+                      <div className="min-w-0 overflow-hidden xl:pr-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/8 pb-2">
+                          <div className="min-w-0">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-black/[0.42]">
+                              {workbenchFocusPrimaryLabel}
+                            </p>
+                            <p className="mt-1.5 truncate text-[13px] font-medium text-black/[0.82]">
+                              {workbenchFocusPrimaryCaption}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-x-4 gap-y-1">
+                            <span className="text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">{autonomyStateLabel}</span>
+                            <button
+                              type="button"
+                              onClick={() => activateOperatorTab(autonomySuggestedTab)}
+                              className="text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
+                            >
+                              Follow {OPERATOR_TAB_OPTIONS.find((tab) => tab.key === autonomySuggestedTab)?.label ?? "surface"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="pt-2.5">
+                          {autonomySuggestedTab === "browser" ? (
+                            browserSession ? (
+                              <div className="space-y-3">
+                                {selectedBrowserScreenshot ? (
+                                  <Image
+                                    src={toolArtifactPreviewHref(data.workspace_id, selectedBrowserScreenshot)}
+                                    alt={browserSession.page_title || "Browser capture"}
+                                    width={1600}
+                                    height={900}
+                                    unoptimized
+                                  className="h-auto w-full bg-white object-contain"
+                                  style={workbenchPrimaryViewportHeight ? { maxHeight: workbenchPrimaryViewportHeight } : undefined}
+                                />
+                              ) : selectedBrowserHtml ? (
+                                  <iframe
+                                    key={selectedBrowserHtml.storage_key}
+                                    src={toolArtifactPreviewHref(data.workspace_id, selectedBrowserHtml)}
+                                    title={artifactLabel(selectedBrowserHtml)}
+                                    className="w-full bg-white"
+                                    style={{ height: workbenchPrimaryViewportHeight ?? "300px" }}
+                                    sandbox="allow-same-origin allow-scripts"
+                                  />
+                                ) : (
+                                  <div className="flex min-h-[220px] items-center justify-center px-2 py-6 text-center text-sm text-black/[0.58]">
+                                    No screenshot or inline page preview is available for the current browser session yet.
+                                  </div>
+                                )}
+                                <div className="border-t border-black/8 pt-3 text-sm leading-6 text-black/[0.68]">
+                                  {browserSession.extracted_text
+                                    ? compactText(browserSession.extracted_text, 420)
+                                    : "The browser session is active, but readable page text has not been captured yet."}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex min-h-[220px] items-center justify-center px-2 py-6 text-center text-sm text-black/[0.58]">
+                                Browser work will appear here when a run opens pages, captures screenshots, or asks for review.
+                              </div>
+                            )
+                          ) : autonomySuggestedTab === "terminal" ? (
+                            terminalSession ? (
+                              <div className="overflow-hidden bg-[#111111]">
+                                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-[11px] uppercase tracking-[0.16em] text-white/48">
+                                  <span>{(terminalSession.command ?? []).join(" ") || "Python sandbox"}</span>
+                                  <span>{statusLabel(terminalSession.status)}</span>
+                                </div>
+                                <div
+                                  ref={terminalOutputRef}
+                                  className="overflow-auto px-4 py-4 font-mono text-xs leading-6 text-white/88"
+                                  style={{ maxHeight: workbenchPrimaryViewportHeight ?? "300px" }}
+                                >
+                                  {terminalOutput.trim() ? (
+                                    <pre
+                                      className={cn(
+                                        "whitespace-pre-wrap",
+                                        terminalStreamMode === "stderr" && "text-red-300"
+                                      )}
+                                    >
+                                      {terminalOutput}
+                                    </pre>
+                                  ) : (
+                                    <pre className="whitespace-pre-wrap text-white/55">
+                                      {terminalSession.status === "running"
+                                        ? "Waiting for terminal output..."
+                                        : "No terminal output captured yet."}
+                                    </pre>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex min-h-[220px] items-center justify-center px-2 py-6 text-center text-sm text-black/[0.58]">
+                                Terminal and code execution output will appear here when the coding or analysis agents use the sandbox.
+                              </div>
+                            )
+                          ) : autonomySuggestedTab === "preview" ? (
+                            <div className="overflow-hidden bg-[#f8f5ef]">
+                              {selectedPreviewArtifact ? (
+                                selectedPreviewMode === "image" ? (
+                                  <Image
+                                    src={toolArtifactPreviewHref(data.workspace_id, selectedPreviewArtifact)}
+                                    alt={artifactLabel(selectedPreviewArtifact)}
+                                    width={1600}
+                                    height={900}
+                                    unoptimized
+                                    className="h-auto w-full bg-sand/60 object-contain"
+                                  />
+                                ) : selectedPreviewMode === "frame" ? (
+                                  <iframe
+                                    key={selectedPreviewArtifact.storage_key}
+                                    src={toolArtifactPreviewHref(data.workspace_id, selectedPreviewArtifact)}
+                                    title={artifactLabel(selectedPreviewArtifact)}
+                                    className="w-full bg-white"
+                                    style={{ height: workbenchPrimaryViewportHeight ?? "300px" }}
+                                    sandbox="allow-same-origin allow-scripts"
+                                  />
+                                ) : (
+                                  <div className="flex min-h-[220px] items-center justify-center px-2 py-6 text-center text-sm text-black/[0.58]">
+                                    This artifact is not previewable inline yet. Use the download action to inspect it.
+                                  </div>
+                                )
+                              ) : (
+                                <div className="flex min-h-[220px] items-center justify-center px-2 py-6 text-center text-sm text-black/[0.58]">
+                                  Generated apps, docs, images, and reports will render here as soon as the agents create previewable artifacts.
+                                </div>
+                              )}
+                            </div>
+                          ) : autonomySuggestedTab === "code" ? (
+                            selectedWorkbenchFile ? (
+                              <div className="overflow-hidden bg-[#101114]">
+                                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-[11px] uppercase tracking-[0.16em] text-white/48">
+                                  <span>{selectedWorkbenchFile.relative_path}</span>
+                                  <span>{selectedWorkbenchDirty ? "Modified" : "Synced"}</span>
+                                </div>
+                                <pre
+                                  className="overflow-auto px-4 py-4 font-mono text-xs leading-6 text-white/84"
+                                  style={{ maxHeight: workbenchPrimaryViewportHeight ?? "300px" }}
+                                >
+                                  {selectedWorkbenchDraft || " "}
+                                </pre>
+                              </div>
+                            ) : (
+                              <div className="bg-transparent">
+                                <div className="flex items-center justify-between border-b border-black/10 px-4 py-3 text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
+                                  <span>{rootWorkbenchTree?.root_label ?? "Workspace"}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => void fetchWorkbenchDirectory(".", { force: true })}
+                                    className="text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
+                                  >
+                                    Refresh
+                                  </button>
+                                </div>
+                                <div
+                                  className="space-y-2 overflow-y-auto p-3"
+                                  style={workbenchPrimaryViewportHeight ? { maxHeight: workbenchPrimaryViewportHeight } : undefined}
+                                >
+                                  {rootWorkbenchTree && rootWorkbenchTree.entries.length > 0 ? (
+                                    rootWorkbenchTree.entries.slice(0, 14).map((entry) => (
+                                      <button
+                                        key={entry.relative_path}
+                                        type="button"
+                                        onClick={() => {
+                                          if (entry.kind === "dir") {
+                                            void toggleWorkbenchDirectory(entry.relative_path);
+                                            activateOperatorTab("code");
+                                            return;
+                                          }
+                                          void openWorkbenchFile(entry.relative_path);
+                                        }}
+                                      className="flex w-full items-center justify-between gap-3 border-b border-black/8 px-0 py-2 text-left text-sm text-black/[0.72] transition hover:text-black"
+                                      >
+                                        <span className="flex items-center gap-2 truncate">
+                                          {entry.kind === "dir" ? (
+                                            <FolderTree className="h-4 w-4 shrink-0" />
+                                          ) : (
+                                            <FileText className="h-4 w-4 shrink-0" />
+                                          )}
+                                          <span className="truncate">{entry.relative_path}</span>
+                                        </span>
+                                        <span className="text-[10px] uppercase tracking-[0.14em] text-black/[0.45]">
+                                          {entry.kind === "dir" ? "folder" : entry.extension?.replace(".", "") || "file"}
+                                        </span>
+                                      </button>
+                                    ))
+                                  ) : (
+                                      <div className="flex min-h-[220px] items-center justify-center px-2 py-6 text-center text-sm text-black/[0.58]">
+                                        Workspace files will appear here when the workbench tree is loaded.
+                                      </div>
+                                    )}
+                                </div>
+                              </div>
+                            )
+                          ) : (
+                            <div className="bg-transparent">
+                              <div className="border-b border-black/10 px-4 py-3 text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
+                                Workspace files and outputs
+                              </div>
+                              <div
+                                className="space-y-2 overflow-y-auto p-3"
+                                style={workbenchPrimaryViewportHeight ? { maxHeight: workbenchPrimaryViewportHeight } : undefined}
+                              >
+                                {rootWorkbenchTree && rootWorkbenchTree.entries.length > 0 ? (
+                                  rootWorkbenchTree.entries.slice(0, 16).map((entry) => (
+                                    <button
+                                      key={entry.relative_path}
+                                      type="button"
+                                      onClick={() => {
+                                        if (entry.kind === "dir") {
+                                          void toggleWorkbenchDirectory(entry.relative_path);
+                                          activateOperatorTab("code");
+                                          return;
+                                        }
+                                        void openWorkbenchFile(entry.relative_path);
+                                      }}
+                                      className="flex w-full items-center justify-between gap-3 border-b border-black/8 px-0 py-2 text-left text-sm text-black/[0.72] transition hover:text-black"
+                                    >
+                                      <span className="flex items-center gap-2 truncate">
+                                        {entry.kind === "dir" ? (
+                                          <FolderTree className="h-4 w-4 shrink-0" />
+                                        ) : (
+                                          <FileText className="h-4 w-4 shrink-0" />
+                                        )}
+                                        <span className="truncate">{entry.relative_path}</span>
+                                      </span>
+                                      <span className="text-[10px] uppercase tracking-[0.14em] text-black/[0.45]">
+                                        {entry.kind === "dir" ? "folder" : entry.extension?.replace(".", "") || "file"}
+                                      </span>
+                                    </button>
+                                  ))
+                                ) : (
+                                  <div className="flex min-h-[220px] items-center justify-center px-2 py-6 text-center text-sm text-black/[0.58]">
+                                    Workspace files and outputs will appear here as soon as the run touches them.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="border-l border-black/8 pl-2.5">
+                        <div className="pb-3">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-black/[0.42]">Status</p>
+                          <p className="mt-1.5 text-[13px] font-medium text-black/[0.82]">{autonomyStateLabel}</p>
+                          <p className="mt-1.5 text-[13px] leading-6 text-black/[0.62]">{autonomySummary}</p>
+                          {autonomyMeta.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] uppercase tracking-[0.16em] text-black/[0.44]">
+                              {autonomyMeta.map((item) => (
+                                <span key={item}>
+                                  {item}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {pendingApprovalRequests.length > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => activateOperatorTab("browser")}
+                                className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
+                              >
+                                <ShieldAlert className="h-3.5 w-3.5" />
+                                Review handoff
+                              </button>
+                            ) : browserSession?.final_url ? (
+                              <a
+                                href={browserSession.final_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
+                              >
+                                <ArrowUpRight className="h-3.5 w-3.5" />
+                                Open live page
+                              </a>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => resumeWorkbenchAutonomy(autonomySuggestedTab)}
+                                className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
+                              >
+                                <Sparkles className="h-3.5 w-3.5" />
+                                Resume auto-follow
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="border-t border-black/8 pt-3">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-black/[0.42]">Trace</p>
+                          <div className="mt-3 space-y-2">
+                            {liveWorkbenchActivities.length > 0 ? (
+                              liveWorkbenchActivities.slice(0, 5).map((activity) => (
+                                <button
+                                  key={activity.id}
+                                  type="button"
+                                  onClick={() => {
+                                    if (activity.relative_path) {
+                                      void openWorkbenchFile(activity.relative_path);
+                                      activateOperatorTab("code");
+                                      return;
+                                    }
+                                    if (activity.directory_path) {
+                                      void fetchWorkbenchDirectory(activity.directory_path, { force: true });
+                                      activateOperatorTab("files");
+                                    }
+                                  }}
+                                  className="w-full border-b border-black/8 px-0 py-2.5 text-left transition hover:text-black"
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <span className="truncate text-sm font-medium text-black/[0.8]">
+                                      {activity.relative_path ?? activity.directory_path ?? "workspace"}
+                                    </span>
+                                    <span className="text-[10px] uppercase tracking-[0.12em] text-black/[0.46]">
+                                      {workbenchActivityLabel(activity)}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 text-xs uppercase tracking-[0.14em] text-black/[0.44]">
+                                    {activity.agent_name ?? "Coding agent"} - {formatRelativeTime(activity.created_at)}
+                                  </p>
+                                </button>
+                              ))
+                            ) : (
+                              <div className="px-0 py-2 text-sm text-black/[0.58]">
+                                File focus, browser movement, and generated outputs will appear here as the autonomous run progresses.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="border-t border-black/8 pt-3">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-black/[0.42]">Outputs</p>
+                          <div className="mt-3 space-y-2">
+                            {mergedArtifacts.length > 0 ? (
+                              mergedArtifacts.slice(0, 6).map((artifact) => (
+                                <button
+                                  key={artifact.storage_key}
+                                  type="button"
+                                  onClick={() => {
+                                    if (isPreviewableArtifact(artifact)) {
+                                      setSelectedPreviewStorageKey(artifact.storage_key);
+                                      activateOperatorTab("preview");
+                                      return;
+                                    }
+                                    window.open(toolArtifactHref(data.workspace_id, artifact), "_blank", "noopener,noreferrer");
+                                  }}
+                                  className="block w-full border-b border-black/8 px-0 py-2 text-left text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
+                                >
+                                  {compactText(artifactLabel(artifact), 28)}
+                                </button>
+                              ))
+                            ) : workbenchFocusPrimaryStats.length > 0 ? (
+                              workbenchFocusPrimaryStats.map((item) => (
+                                <span key={item} className="block border-b border-black/8 px-0 py-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.44]">
+                                  {item}
+                                </span>
+                              ))
+                            ) : (
+                              <div className="px-0 py-2 text-sm text-black/[0.58]">
+                                Outputs will appear here as soon as the autonomous run generates something previewable or downloadable.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                  <div className={cn("border-t border-black/8 pt-3", isWorkbenchFocusLayout ? "p-0" : "")}>
                   <div className="flex flex-wrap items-start justify-between gap-4">
                     <div>
                       <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
@@ -6464,7 +7293,7 @@ export function ChatWorkspace({
                     </div>
                   </div>
 
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className={cn("mt-4 grid gap-3 sm:grid-cols-2", isWorkbenchFocusLayout ? "xl:grid-cols-4" : "xl:grid-cols-4")}>
                     <div className="rounded-[22px] bg-sand/55 px-4 py-4">
                       <p className="text-[11px] uppercase tracking-[0.16em] text-black/[0.42]">Current browser</p>
                       <p className="mt-2 text-sm font-medium text-black/[0.8]">
@@ -6575,7 +7404,7 @@ export function ChatWorkspace({
                     </div>
                   )}
 
-                  {(activeTaskMemory || activeProjectMemory) && (
+                  {!isWorkbenchFocusLayout && (activeTaskMemory || activeProjectMemory) && (
                     <div className="mt-4 grid gap-3 lg:grid-cols-2">
                       {activeTaskMemory && (
                         <div className="rounded-[22px] border border-black/10 bg-white/76 p-4">
@@ -6618,7 +7447,7 @@ export function ChatWorkspace({
                     </div>
                   )}
 
-                  {taskTemplates.length > 0 && (
+                  {!isWorkbenchFocusLayout && taskTemplates.length > 0 && (
                     <div className="mt-4 rounded-[22px] border border-black/10 bg-white/76 p-4">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
@@ -6669,11 +7498,16 @@ export function ChatWorkspace({
                     </div>
                   )}
                   </div>
-                )}
+                  ))}
 
                 {showBrowserMode &&
                   (browserSession ? (
-                    <div className="rounded-[26px] border border-black/10 bg-white/80 p-4">
+                    <div
+                      className={cn(
+                        "border-b border-black/8",
+                        isWorkbenchFocusLayout ? "rounded-none border-0 bg-transparent p-0" : "pb-4"
+                      )}
+                    >
                     <div className="mb-4 flex items-start justify-between gap-3">
                       <div>
                         <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
@@ -6685,15 +7519,15 @@ export function ChatWorkspace({
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge className={statusBadgeClass(browserSession.status)}>
+                        <span className="text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
                           {statusLabel(browserSession.status)}
-                        </Badge>
+                        </span>
                         {browserSession.final_url && (
                           <a
                             href={browserSession.final_url}
                             target="_blank"
                             rel="noreferrer"
-                            className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-3 py-2 text-xs font-medium text-black/[0.72] transition hover:bg-white"
+                            className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
                           >
                             Open page
                             <ArrowUpRight className="h-3.5 w-3.5" />
@@ -6704,7 +7538,7 @@ export function ChatWorkspace({
                             href={toolArtifactPreviewHref(data.workspace_id, selectedBrowserHtml)}
                             target="_blank"
                             rel="noreferrer"
-                            className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-3 py-2 text-xs font-medium text-black/[0.72] transition hover:bg-white"
+                            className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
                           >
                             Open HTML
                             <ArrowUpRight className="h-3.5 w-3.5" />
@@ -6721,16 +7555,16 @@ export function ChatWorkspace({
                             type="button"
                             onClick={() => setSelectedBrowserSessionId(session.session_id)}
                             className={cn(
-                              "rounded-full border px-3 py-2 text-left text-xs transition",
+                              "border-b px-0 py-0.5 text-left text-[11px] uppercase tracking-[0.16em] transition",
                               browserSession.session_id === session.session_id
-                                ? "border-ink bg-ink text-white"
-                                : "border-black/10 bg-white/75 text-black/[0.7] hover:bg-white"
+                                ? "border-black text-black"
+                                : "border-transparent text-black/[0.45] hover:text-black"
                             )}
                           >
-                            <span className="block font-medium">
+                            <span className="block font-medium normal-case tracking-normal">
                               {compactText(sessionLabel(session, `Browser ${index + 1}`), 34)}
                             </span>
-                            <span className="mt-1 block uppercase tracking-[0.14em] opacity-70">
+                            <span className="mt-1 block text-[10px] uppercase tracking-[0.14em] opacity-70">
                               {statusLabel(session.status)}
                             </span>
                           </button>
@@ -6745,14 +7579,16 @@ export function ChatWorkspace({
                         width={1600}
                         height={900}
                         unoptimized
-                        className="h-auto w-full rounded-[22px] border border-black/10 bg-sand/60"
+                        className={cn("h-auto w-full rounded-[22px] border border-black/10 bg-sand/60", isWorkbenchFocusLayout && "rounded-none border-black/8 bg-white")}
+                        style={workbenchPrimaryViewportHeight ? { maxHeight: workbenchPrimaryViewportHeight } : undefined}
                       />
                     ) : selectedBrowserHtml ? (
                       <iframe
                         key={selectedBrowserHtml.storage_key}
                         src={toolArtifactPreviewHref(data.workspace_id, selectedBrowserHtml)}
                         title={artifactLabel(selectedBrowserHtml)}
-                        className="h-[380px] w-full rounded-[22px] border border-black/10 bg-white"
+                        className={cn("w-full rounded-[22px] border border-black/10 bg-white", isWorkbenchFocusLayout && "rounded-none border-black/8")}
+                        style={{ height: workbenchPrimaryViewportHeight ?? "380px" }}
                         sandbox="allow-same-origin allow-scripts"
                       />
                     ) : (
@@ -6762,11 +7598,11 @@ export function ChatWorkspace({
                     )}
 
                     {browserMetrics.length > 0 && (
-                      <div className="mt-4 flex flex-wrap gap-2">
+                      <div className={cn("mt-4 flex flex-wrap gap-2", isWorkbenchFocusLayout && "gap-x-4 gap-y-1 text-[11px] uppercase tracking-[0.16em] text-black/[0.44]")}>
                         {browserMetrics.map((entry) => (
                           <span
                             key={`${browserSession.session_id}-${entry.key}`}
-                            className="rounded-full bg-black/[0.04] px-3 py-1.5 text-xs text-black/[0.62]"
+                            className={cn("rounded-full bg-black/[0.04] px-3 py-1.5 text-xs text-black/[0.62]", isWorkbenchFocusLayout && "rounded-none bg-transparent px-0 py-0")}
                           >
                             {entry.label}: {entry.value}
                           </span>
@@ -6774,17 +7610,20 @@ export function ChatWorkspace({
                       </div>
                     )}
 
-                    <div className="mt-4 grid gap-4 lg:grid-cols-[0.56fr_0.44fr]">
-                      <div className="rounded-[22px] bg-sand/60 p-4">
-                        <p className="text-xs uppercase tracking-[0.16em] text-black/[0.44]">Page extract</p>
-                        <p className="mt-3 text-sm leading-7 text-black/[0.74]">
-                          {browserSession.extracted_text
-                            ? compactText(browserSession.extracted_text, 520)
-                            : "The browser session has not captured readable page text yet."}
-                        </p>
-                      </div>
-                      <div className="space-y-4">
-                        <div className="rounded-[22px] bg-white/75 p-4">
+                      <div className={cn("mt-4 grid gap-4", isWorkbenchFocusLayout ? "lg:grid-cols-[0.62fr_0.38fr]" : "lg:grid-cols-[0.56fr_0.44fr]")}>
+                        <div className={cn("rounded-[22px] bg-sand/60 p-4", isWorkbenchFocusLayout && "rounded-none border-t border-black/8 bg-transparent px-0 pb-0 pt-3")}>
+                          <p className="text-xs uppercase tracking-[0.16em] text-black/[0.44]">Page extract</p>
+                          <p
+                            className="mt-3 overflow-y-auto text-sm leading-7 text-black/[0.74]"
+                            style={workbenchSecondaryViewportHeight ? { maxHeight: workbenchSecondaryViewportHeight } : undefined}
+                          >
+                            {browserSession.extracted_text
+                              ? compactText(browserSession.extracted_text, 520)
+                              : "The browser session has not captured readable page text yet."}
+                          </p>
+                        </div>
+                        <div className={cn("space-y-4", isWorkbenchFocusLayout && "overflow-y-auto")} style={workbenchSecondaryViewportHeight ? { maxHeight: workbenchSecondaryViewportHeight } : undefined}>
+                          <div className={cn("rounded-[22px] bg-white/75 p-4", isWorkbenchFocusLayout && "rounded-none border-t border-black/8 bg-transparent px-0 pb-0 pt-3")}>
                           <p className="text-xs uppercase tracking-[0.16em] text-black/[0.44]">Actions</p>
                           <div className="mt-3 space-y-2 text-sm text-black/[0.72]">
                             {[...(browserSession.executed_actions ?? []), ...(browserSession.skipped_actions ?? [])].length > 0 ? (
@@ -6792,7 +7631,7 @@ export function ChatWorkspace({
                                 {(browserSession.executed_actions ?? []).map((action, index) => (
                                   <div
                                     key={`executed-${action.kind}-${action.selector}-${index}`}
-                                    className="rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-3"
+                                    className={cn("rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-3", isWorkbenchFocusLayout && "rounded-none border-x-0 border-t-0 border-b-black/8 bg-transparent px-0")}
                                   >
                                     <div className="flex items-center justify-between gap-3">
                                       <span className="font-medium text-emerald-900">
@@ -6808,7 +7647,7 @@ export function ChatWorkspace({
                                 {(browserSession.skipped_actions ?? []).map((action, index) => (
                                   <div
                                     key={`skipped-${action.kind}-${action.selector}-${index}`}
-                                    className="rounded-2xl border border-black/10 bg-sand/55 px-3 py-3"
+                                    className={cn("rounded-2xl border border-black/10 bg-sand/55 px-3 py-3", isWorkbenchFocusLayout && "rounded-none border-x-0 border-t-0 border-b-black/8 bg-transparent px-0")}
                                   >
                                     <div className="flex items-center justify-between gap-3">
                                       <span className="font-medium text-black/[0.72]">
@@ -6823,27 +7662,27 @@ export function ChatWorkspace({
                                 ))}
                               </>
                             ) : (
-                              <div className="rounded-2xl bg-sand/55 px-3 py-2">
+                              <div className={cn("rounded-2xl bg-sand/55 px-3 py-2", isWorkbenchFocusLayout && "rounded-none bg-transparent px-0")}>
                                 Read-only capture. No interactive browser actions executed.
                               </div>
                             )}
                           </div>
                         </div>
-                        <div className="rounded-[22px] bg-white/75 p-4">
+                        <div className={cn("rounded-[22px] bg-white/75 p-4", isWorkbenchFocusLayout && "rounded-none border-t border-black/8 bg-transparent px-0 pb-0 pt-3")}>
                           <p className="text-xs uppercase tracking-[0.16em] text-black/[0.44]">Headings</p>
                           <div className="mt-3 space-y-2 text-sm text-black/[0.72]">
                             {browserSession.headings && browserSession.headings.length > 0 ? (
                               browserSession.headings.slice(0, 6).map((heading, index) => (
-                                <div key={`${heading}-${index}`} className="rounded-2xl bg-sand/55 px-3 py-2">
+                                <div key={`${heading}-${index}`} className={cn("rounded-2xl bg-sand/55 px-3 py-2", isWorkbenchFocusLayout && "rounded-none bg-transparent px-0")}>
                                   {heading}
                                 </div>
                               ))
                             ) : (
-                              <div className="rounded-2xl bg-sand/55 px-3 py-2">No heading summary captured yet.</div>
+                              <div className={cn("rounded-2xl bg-sand/55 px-3 py-2", isWorkbenchFocusLayout && "rounded-none bg-transparent px-0")}>No heading summary captured yet.</div>
                             )}
                           </div>
                         </div>
-                        <div className="rounded-[22px] bg-white/75 p-4">
+                        <div className={cn("rounded-[22px] bg-white/75 p-4", isWorkbenchFocusLayout && "rounded-none border-t border-black/8 bg-transparent px-0 pb-0 pt-3")}>
                           <p className="text-xs uppercase tracking-[0.16em] text-black/[0.44]">Links</p>
                           <div className="mt-3 space-y-2 text-sm text-black/[0.72]">
                             {browserSession.links && browserSession.links.length > 0 ? (
@@ -6853,14 +7692,14 @@ export function ChatWorkspace({
                                   href={link.url}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="flex items-center justify-between gap-2 rounded-2xl bg-sand/55 px-3 py-2 transition hover:bg-sand/75"
+                                  className={cn("flex items-center justify-between gap-2 rounded-2xl bg-sand/55 px-3 py-2 transition hover:bg-sand/75", isWorkbenchFocusLayout && "rounded-none bg-transparent px-0 hover:bg-transparent")}
                                 >
                                   <span className="truncate">{link.text || link.url}</span>
                                   <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
                                 </a>
                               ))
                             ) : (
-                              <div className="rounded-2xl bg-sand/55 px-3 py-2">No link summary captured yet.</div>
+                              <div className={cn("rounded-2xl bg-sand/55 px-3 py-2", isWorkbenchFocusLayout && "rounded-none bg-transparent px-0")}>No link summary captured yet.</div>
                             )}
                           </div>
                         </div>
@@ -6881,7 +7720,12 @@ export function ChatWorkspace({
 
                 {showTerminalMode &&
                   (terminalSession ? (
-                    <div className="rounded-[26px] border border-black/10 bg-[#111111] p-4 text-white">
+                    <div
+                      className={cn(
+                        "border-b border-black/8 bg-[#111111] text-white",
+                        isWorkbenchFocusLayout ? "rounded-none border-0 bg-[#111111] p-0" : "pb-4"
+                      )}
+                    >
                     <div className="mb-4 flex items-start justify-between gap-3">
                       <div>
                         <div className="flex items-center gap-2 text-sm font-medium">
@@ -6892,9 +7736,9 @@ export function ChatWorkspace({
                           {(terminalSession.command ?? []).join(" ") || "Python sandbox"}
                         </p>
                       </div>
-                      <Badge className={statusBadgeClass(terminalSession.status)}>
+                      <span className="text-[11px] uppercase tracking-[0.16em] text-white/45">
                         {statusLabel(terminalSession.status)}
-                      </Badge>
+                      </span>
                     </div>
 
                     {terminalSessions.length > 1 && (
@@ -6905,16 +7749,16 @@ export function ChatWorkspace({
                             type="button"
                             onClick={() => setSelectedTerminalSessionId(session.session_id)}
                             className={cn(
-                              "rounded-full border px-3 py-2 text-left text-xs transition",
+                              "border-b px-0 py-0.5 text-left text-[11px] uppercase tracking-[0.16em] transition",
                               terminalSession.session_id === session.session_id
-                                ? "border-white/15 bg-white text-black"
-                                : "border-white/10 bg-black/25 text-white/72 hover:bg-black/35"
+                                ? "border-white text-white"
+                                : "border-transparent text-white/52 hover:text-white"
                             )}
                           >
-                            <span className="block font-medium">
+                            <span className="block font-medium normal-case tracking-normal">
                               {compactText(sessionLabel(session, `Terminal ${index + 1}`), 34)}
                             </span>
-                            <span className="mt-1 block uppercase tracking-[0.14em] opacity-70">
+                            <span className="mt-1 block text-[10px] uppercase tracking-[0.14em] opacity-70">
                               {statusLabel(session.status)}
                             </span>
                           </button>
@@ -6930,10 +7774,10 @@ export function ChatWorkspace({
                             type="button"
                             onClick={() => setTerminalStreamMode(mode)}
                             className={cn(
-                              "rounded-full border px-3 py-2 text-xs font-medium uppercase tracking-[0.14em] transition",
+                              "border-b px-0 py-0.5 text-[11px] uppercase tracking-[0.16em] transition",
                               terminalStreamMode === mode
-                                ? "border-white bg-white text-black"
-                                : "border-white/10 bg-black/20 text-white/72 hover:bg-black/35"
+                                ? "border-white text-white"
+                                : "border-transparent text-white/52 hover:text-white"
                             )}
                           >
                             {mode}
@@ -6944,7 +7788,10 @@ export function ChatWorkspace({
                         <button
                           type="button"
                           onClick={() => void copyTerminalOutput()}
-                          className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/25 px-3 py-2 text-xs font-medium text-white/72 transition hover:bg-black/35"
+                          className={cn(
+                            "inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/25 px-3 py-2 text-xs font-medium text-white/72 transition hover:bg-black/35",
+                            isWorkbenchFocusLayout && "rounded-none border-0 bg-transparent px-0 py-0 uppercase tracking-[0.16em] text-white/55 hover:text-white"
+                          )}
                         >
                           <Copy className="h-3.5 w-3.5" />
                           Copy output
@@ -6956,7 +7803,11 @@ export function ChatWorkspace({
                             "rounded-full border px-3 py-2 text-xs font-medium transition",
                             terminalFollowOutput
                               ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                              : "border-white/10 bg-black/25 text-white/72 hover:bg-black/35"
+                              : "border-white/10 bg-black/25 text-white/72 hover:bg-black/35",
+                            isWorkbenchFocusLayout &&
+                              (terminalFollowOutput
+                                ? "rounded-none border-0 bg-transparent px-0 py-0 uppercase tracking-[0.16em] text-emerald-200"
+                                : "rounded-none border-0 bg-transparent px-0 py-0 uppercase tracking-[0.16em] text-white/55 hover:text-white")
                           )}
                         >
                           Follow live {terminalFollowOutput ? "on" : "off"}
@@ -6964,19 +7815,22 @@ export function ChatWorkspace({
                         <button
                           type="button"
                           onClick={jumpTerminalToLatest}
-                          className="rounded-full border border-white/10 bg-black/25 px-3 py-2 text-xs font-medium text-white/72 transition hover:bg-black/35"
+                          className={cn(
+                            "rounded-full border border-white/10 bg-black/25 px-3 py-2 text-xs font-medium text-white/72 transition hover:bg-black/35",
+                            isWorkbenchFocusLayout && "rounded-none border-0 bg-transparent px-0 py-0 uppercase tracking-[0.16em] text-white/55 hover:text-white"
+                          )}
                         >
                           Jump to latest
                         </button>
                       </div>
                     </div>
 
-                    <div className="mb-4 grid gap-3 sm:grid-cols-3">
-                      <div className="rounded-[20px] border border-white/10 bg-black/35 px-4 py-3">
+                    <div className={cn("mb-4 grid gap-3 sm:grid-cols-3", isWorkbenchFocusLayout && "grid-cols-1 gap-y-1 text-[11px] uppercase tracking-[0.16em] text-white/45 sm:grid-cols-1")}>
+                      <div className={cn("rounded-[20px] border border-white/10 bg-black/35 px-4 py-3", isWorkbenchFocusLayout && "rounded-none border-0 bg-transparent px-0 py-0")}>
                         <p className="text-[11px] uppercase tracking-[0.16em] text-white/42">Phase</p>
                         <p className="mt-2 text-sm text-white/86">{terminalSession.phase ?? terminalSession.status}</p>
                       </div>
-                      <div className="rounded-[20px] border border-white/10 bg-black/35 px-4 py-3">
+                      <div className={cn("rounded-[20px] border border-white/10 bg-black/35 px-4 py-3", isWorkbenchFocusLayout && "rounded-none border-0 bg-transparent px-0 py-0")}>
                         <p className="text-[11px] uppercase tracking-[0.16em] text-white/42">Return code</p>
                         <p className="mt-2 text-sm text-white/86">
                           {terminalSession.returncode !== null && terminalSession.returncode !== undefined
@@ -6986,7 +7840,7 @@ export function ChatWorkspace({
                               : "Pending"}
                         </p>
                       </div>
-                      <div className="rounded-[20px] border border-white/10 bg-black/35 px-4 py-3">
+                      <div className={cn("rounded-[20px] border border-white/10 bg-black/35 px-4 py-3", isWorkbenchFocusLayout && "rounded-none border-0 bg-transparent px-0 py-0")}>
                         <p className="text-[11px] uppercase tracking-[0.16em] text-white/42">Captured size</p>
                         <p className="mt-2 text-sm text-white/86">
                           {`${(terminalSession.stdout ?? "").length + (terminalSession.stderr ?? "").length} chars`}
@@ -7010,7 +7864,8 @@ export function ChatWorkspace({
                     </div>
                     <div
                       ref={terminalOutputRef}
-                      className="max-h-[460px] overflow-auto rounded-[20px] border border-white/10 bg-black/45 p-4 font-mono text-xs leading-6 text-white/88"
+                      className={cn("overflow-auto rounded-[20px] border border-white/10 bg-black/45 p-4 font-mono text-xs leading-6 text-white/88", isWorkbenchFocusLayout && "rounded-none border-white/12 bg-black/60")}
+                      style={{ maxHeight: workbenchPrimaryViewportHeight ?? "460px" }}
                     >
                       {terminalOutput.trim() ? (
                         <pre
@@ -7040,9 +7895,12 @@ export function ChatWorkspace({
                               type="button"
                               onClick={() => {
                                 setSelectedPreviewStorageKey(artifact.storage_key);
-                                setOperatorTab("preview");
+                                activateOperatorTab("preview");
                               }}
-                              className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-white/78 transition hover:bg-white/14"
+                              className={cn(
+                                "rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-white/78 transition hover:bg-white/14",
+                                isWorkbenchFocusLayout && "rounded-none border-0 bg-transparent px-0 py-0 uppercase tracking-[0.16em] text-white/55 hover:text-white"
+                              )}
                             >
                               {artifactLabel(artifact)}
                             </button>
@@ -7058,14 +7916,19 @@ export function ChatWorkspace({
                   ))}
 
                 {showPreviewMode && (
-                  <div className="rounded-[26px] border border-black/10 bg-white/80 p-4">
+                  <div
+                    className={cn(
+                      "border-b border-black/8",
+                      isWorkbenchFocusLayout ? "rounded-none border-0 bg-transparent p-0" : "pb-4"
+                    )}
+                  >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
                         <Code2 className="h-4 w-4" />
                         App preview
                       </div>
-                      <p className="mt-2 text-sm text-black/[0.58]">
+                      <p className={cn("mt-2 text-sm text-black/[0.58]", isWorkbenchFocusLayout && "max-w-2xl text-[13px] leading-6")}>
                         Generated web pages, reports, screenshots, and other previewable outputs render inline here.
                       </p>
                     </div>
@@ -7075,7 +7938,7 @@ export function ChatWorkspace({
                           href={toolArtifactPreviewHref(data.workspace_id, selectedPreviewArtifact)}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-3 py-2 text-xs font-medium text-black/[0.72] transition hover:bg-white"
+                          className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
                         >
                           Open preview
                           <ArrowUpRight className="h-3.5 w-3.5" />
@@ -7084,7 +7947,7 @@ export function ChatWorkspace({
                           href={toolArtifactHref(data.workspace_id, selectedPreviewArtifact)}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-3 py-2 text-xs font-medium text-black/[0.72] transition hover:bg-white"
+                          className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-black/[0.52] transition hover:text-black"
                         >
                           Download
                           <Download className="h-3.5 w-3.5" />
@@ -7101,10 +7964,10 @@ export function ChatWorkspace({
                           type="button"
                           onClick={() => setSelectedPreviewStorageKey(artifact.storage_key)}
                           className={cn(
-                            "rounded-full border px-3 py-2 text-left text-xs transition",
+                            "border-b px-0 py-0.5 text-left text-[11px] uppercase tracking-[0.16em] transition",
                             selectedPreviewArtifact?.storage_key === artifact.storage_key
-                              ? "border-ink bg-ink text-white"
-                              : "border-black/10 bg-white/75 text-black/[0.7] hover:bg-white"
+                              ? "border-black text-black"
+                              : "border-transparent text-black/[0.45] hover:text-black"
                           )}
                         >
                           {compactText(artifactLabel(artifact), 36)}
@@ -7113,7 +7976,12 @@ export function ChatWorkspace({
                     </div>
                   )}
 
-                  <div className="mt-4 overflow-hidden rounded-[24px] border border-black/10 bg-[#f5f0e6]">
+                    <div
+                      className={cn(
+                        "mt-4 overflow-hidden border border-black/8 bg-[#f5f0e6]",
+                        isWorkbenchFocusLayout && "rounded-none border-black/8 bg-[#f8f5ef]"
+                      )}
+                    >
                     {selectedPreviewArtifact ? (
                       selectedPreviewMode === "image" ? (
                         <Image
@@ -7129,7 +7997,8 @@ export function ChatWorkspace({
                           key={selectedPreviewArtifact.storage_key}
                           src={toolArtifactPreviewHref(data.workspace_id, selectedPreviewArtifact)}
                           title={artifactLabel(selectedPreviewArtifact)}
-                          className="h-[560px] w-full bg-white"
+                          className="w-full bg-white"
+                          style={{ height: workbenchPrimaryViewportHeight ?? "560px" }}
                           sandbox="allow-same-origin allow-scripts"
                         />
                       ) : (
@@ -7145,14 +8014,14 @@ export function ChatWorkspace({
                   </div>
 
                   {selectedPreviewArtifact && (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <span className="rounded-full bg-black/[0.04] px-3 py-1.5 text-xs text-black/[0.62]">
+                    <div className={cn("mt-4 flex flex-wrap gap-2", isWorkbenchFocusLayout && "gap-x-4 gap-y-1 text-[11px] uppercase tracking-[0.16em] text-black/[0.44]")}>
+                      <span className="text-[11px] uppercase tracking-[0.16em] text-black/[0.44]">
                         {selectedPreviewArtifact.content_type ?? "artifact"}
                       </span>
-                      <span className="rounded-full bg-black/[0.04] px-3 py-1.5 text-xs text-black/[0.62]">
+                      <span className="text-[11px] uppercase tracking-[0.16em] text-black/[0.44]">
                         {formatBytes(selectedPreviewArtifact.size_bytes)}
                       </span>
-                      <span className="rounded-full bg-black/[0.04] px-3 py-1.5 text-xs text-black/[0.62]">
+                      <span className="text-[11px] uppercase tracking-[0.16em] text-black/[0.44]">
                         {artifactFileName(selectedPreviewArtifact)}
                       </span>
                     </div>
@@ -7161,7 +8030,12 @@ export function ChatWorkspace({
                 )}
 
                 {operatorTab === "files" && (
-                  <div className="rounded-[26px] border border-black/10 bg-white/80 p-4">
+                  <div
+                    className={cn(
+                      "border-b border-black/8",
+                      isWorkbenchFocusLayout ? "rounded-none border-0 bg-transparent p-0" : "pb-4"
+                    )}
+                  >
                     <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
                       <FolderTree className="h-4 w-4" />
                       Workspace files
@@ -7170,7 +8044,10 @@ export function ChatWorkspace({
                       Jump from the live operator surface into the files the coding agent is reading or changing.
                     </p>
 
-                    <div className="mt-4 space-y-2">
+                    <div
+                      className="mt-4 space-y-2 overflow-y-auto"
+                      style={workbenchPrimaryViewportHeight ? { maxHeight: workbenchPrimaryViewportHeight } : undefined}
+                    >
                       {rootWorkbenchTree && rootWorkbenchTree.entries.length > 0 ? (
                         rootWorkbenchTree.entries.slice(0, 16).map((entry) => (
                           <button
@@ -7179,12 +8056,15 @@ export function ChatWorkspace({
                             onClick={() => {
                               if (entry.kind === "dir") {
                                 void toggleWorkbenchDirectory(entry.relative_path);
-                                setOperatorTab("code");
+                                activateOperatorTab("code");
                                 return;
                               }
                               void openWorkbenchFile(entry.relative_path);
                             }}
-                            className="flex w-full items-center justify-between gap-3 rounded-[18px] border border-black/10 bg-sand/45 px-4 py-3 text-left text-sm text-black/[0.72] transition hover:bg-sand/65"
+                            className={cn(
+                              "flex w-full items-center justify-between gap-3 border-b border-black/8 px-0 py-2.5 text-left text-sm text-black/[0.72] transition hover:text-black",
+                              isWorkbenchFocusLayout && "rounded-none border-x-0 border-t-0 border-b-black/8 bg-transparent px-0 hover:bg-transparent"
+                            )}
                           >
                             <span className="flex items-center gap-2 truncate">
                               {entry.kind === "dir" ? (
@@ -7200,7 +8080,7 @@ export function ChatWorkspace({
                           </button>
                         ))
                       ) : (
-                        <div className="rounded-[22px] border border-dashed border-black/10 bg-sand/35 px-4 py-8 text-center text-sm text-black/[0.58]">
+                        <div className="border border-dashed border-black/8 px-4 py-8 text-center text-sm text-black/[0.58]">
                           Workspace files will appear here once the workbench tree is loaded.
                         </div>
                       )}
@@ -7209,7 +8089,12 @@ export function ChatWorkspace({
                 )}
 
                 {showFilesMode && (
-                  <div className="rounded-[26px] border border-black/10 bg-white/80 p-4">
+                  <div
+                    className={cn(
+                      "border-b border-black/8",
+                      isWorkbenchFocusLayout ? "rounded-none border-0 bg-transparent p-0" : "pb-4"
+                    )}
+                  >
                   <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
                     <Activity className="h-4 w-4" />
                     {operatorTab === "files" ? "Files and outputs" : "Session activity"}
@@ -7229,7 +8114,10 @@ export function ChatWorkspace({
                               void fetchWorkbenchDirectory(activity.directory_path, { force: true });
                             }
                           }}
-                          className="w-full rounded-[20px] bg-sand/55 px-4 py-3 text-left transition hover:bg-sand/70"
+                          className={cn(
+                            "w-full border-b border-black/8 px-0 py-2.5 text-left transition hover:text-black",
+                            isWorkbenchFocusLayout && "rounded-none border-b border-black/8 bg-transparent px-0 hover:bg-transparent"
+                          )}
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div>
@@ -7240,12 +8128,7 @@ export function ChatWorkspace({
                                 {activity.agent_name ?? "Coding agent"} - {formatRelativeTime(activity.created_at)}
                               </p>
                             </div>
-                            <span
-                              className={cn(
-                                "rounded-full border px-2 py-1 text-[10px] uppercase tracking-[0.12em]",
-                                workbenchActivityTone(activity)
-                              )}
-                            >
+                            <span className="text-[10px] uppercase tracking-[0.12em] text-black/[0.46]">
                               {workbenchActivityLabel(activity)}
                             </span>
                           </div>
@@ -7256,7 +8139,7 @@ export function ChatWorkspace({
                       ))
                     ) : computerSessions.length > 0 ? (
                       computerSessions.slice(0, 8).map((session, index) => (
-                        <div key={session.session_id} className="rounded-[20px] bg-sand/55 px-4 py-3">
+                        <div key={session.session_id} className={cn("border-b border-black/8 px-0 py-2.5", isWorkbenchFocusLayout && "rounded-none border-b border-black/8 bg-transparent px-0")}>
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <p className="text-sm font-medium text-black/[0.8]">
@@ -7272,9 +8155,9 @@ export function ChatWorkspace({
                                 {session.session_kind === "browser" ? "browser" : "terminal"} - {formatRelativeTime(session.updated_at)}
                               </p>
                             </div>
-                            <Badge className={statusBadgeClass(session.status)}>
+                            <span className="text-[10px] uppercase tracking-[0.12em] text-black/[0.46]">
                               {statusLabel(session.status)}
-                            </Badge>
+                            </span>
                           </div>
                           {session.session_kind === "browser" ? (
                             <p className="mt-3 text-sm leading-6 text-black/[0.68]">
@@ -7305,12 +8188,15 @@ export function ChatWorkspace({
                             onClick={() => {
                               if (isPreviewableArtifact(artifact)) {
                                 setSelectedPreviewStorageKey(artifact.storage_key);
-                                setOperatorTab("preview");
+                                activateOperatorTab("preview");
                               } else {
                                 window.open(toolArtifactHref(data.workspace_id, artifact), "_blank", "noopener,noreferrer");
                               }
                             }}
-                            className="rounded-full border border-black/10 bg-white/80 px-3 py-2 text-xs text-black/[0.72] transition hover:bg-white"
+                            className={cn(
+                              "rounded-full border border-black/10 bg-white/80 px-3 py-2 text-xs text-black/[0.72] transition hover:bg-white",
+                              isWorkbenchFocusLayout && "rounded-none border-0 bg-transparent px-0 py-0 uppercase tracking-[0.16em] text-black/[0.52] hover:text-black"
+                            )}
                           >
                             {artifactLabel(artifact)}
                           </button>

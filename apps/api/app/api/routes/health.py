@@ -21,7 +21,7 @@ async def healthcheck() -> HealthRead:
     return HealthRead(
         status="ok",
         app=settings.app_name,
-        models_configured=bool(settings.alibaba_api_key),
+        models_configured=settings.alibaba_api_key_configured,
         timestamp=datetime.now(timezone.utc),
     )
 
@@ -48,7 +48,7 @@ async def readiness() -> ReadinessRead:
         status="ready",
         app=settings.app_name,
         database="ok",
-        models_configured=bool(settings.alibaba_api_key),
+        models_configured=settings.alibaba_api_key_configured,
         timestamp=datetime.now(timezone.utc),
     )
 

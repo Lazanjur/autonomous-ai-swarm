@@ -1,33 +1,33 @@
 "use client";
 
 import { FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
-  Activity,
   Bot,
   BookOpen,
-  Boxes,
   ChevronLeft,
   ChevronRight,
-  FileSearch,
-  FolderOpen,
+  FolderKanban,
   FolderPlus,
   History,
-  Layers3,
   LoaderCircle,
   LogOut,
   MessageSquarePlus,
+  PlugZap,
   Search,
-  Settings2,
-  ShieldCheck,
-  TimerReset
+  Sparkles,
+  Workflow,
+  X
 } from "lucide-react";
+
 import type {
   AuthProfile,
-  ChatSearchResponse,
   ChatProjectCreatePayload,
+  ChatSearchResponse,
   ChatTaskRailData,
+  IntegrationProviderStatus,
   ProjectSummary,
   SearchResult,
   Thread
@@ -35,18 +35,42 @@ import type {
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { resolveActiveWorkspace, withWorkspacePath } from "@/lib/workspace";
 
-const workspaceItems = [
-  { href: "/app/agents", label: "Agents", icon: Bot },
-  { href: "/app/library", label: "Library", icon: Layers3 },
-  { href: "/app/knowledge", label: "Knowledge", icon: BookOpen },
-  { href: "/app/artifacts", label: "Artifacts", icon: Boxes },
-  { href: "/app/automations", label: "Automations", icon: TimerReset },
-  { href: "/app/monitor", label: "Monitor", icon: Activity },
-  { href: "/app/admin", label: "Admin", icon: ShieldCheck },
-  { href: "/app/settings", label: "Settings", icon: Settings2 }
-];
+const SIDEBAR_COLLAPSE_STORAGE_KEY = "swarm.sidebar.collapsed.v2";
 
-const SIDEBAR_COLLAPSE_STORAGE_KEY = "swarm.sidebar.collapsed.v1";
+const FALLBACK_CONNECTORS: IntegrationProviderStatus[] = [
+  {
+    key: "email",
+    provider: "email",
+    configured: false,
+    live_delivery_supported: true,
+    uses_approval_gate: false,
+    detail: "Deliver updates and generated outputs by email."
+  },
+  {
+    key: "slack",
+    provider: "slack",
+    configured: false,
+    live_delivery_supported: true,
+    uses_approval_gate: true,
+    detail: "Send operator updates and approvals to Slack."
+  },
+  {
+    key: "webhook",
+    provider: "webhook",
+    configured: false,
+    live_delivery_supported: true,
+    uses_approval_gate: true,
+    detail: "Trigger downstream systems with webhooks."
+  },
+  {
+    key: "calendar",
+    provider: "calendar",
+    configured: false,
+    live_delivery_supported: true,
+    uses_approval_gate: false,
+    detail: "Sync schedules and event-driven work."
+  }
+];
 
 function taskRailHref(
   workspaceId?: string | null,
@@ -75,13 +99,6 @@ function artifactSearchHref(workspaceId: string | null | undefined, query: strin
   });
 }
 
-function splitItems<T>(items: T[]) {
-  return {
-    recent: items.slice(0, 4),
-    history: items.slice(4)
-  };
-}
-
 function sortProjects(projects: ProjectSummary[]) {
   return [...projects].sort((left, right) => {
     const leftAt = left.last_activity_at ?? left.updated_at;
@@ -90,26 +107,49 @@ function sortProjects(projects: ProjectSummary[]) {
   });
 }
 
-type TaskRailDisplayItem = {
-  thread: Thread;
-  highlight: string | null;
-  matched_by: string[];
-  score?: number;
-};
+function searchResultHref(
+  result: SearchResult,
+  workspaceId: string | null | undefined,
+  query: string
+) {
+  if (result.kind === "task" && result.thread) {
+    return taskRailHref(
+      workspaceId,
+      result.thread.project_id ?? result.project?.id ?? null,
+      result.thread.id
+    );
+  }
+  if (result.kind === "project" && result.project) {
+    return taskRailHref(workspaceId, result.project.id, null);
+  }
+  if (result.kind === "document" && result.document) {
+    return knowledgeSearchHref(workspaceId, query, result.document.id);
+  }
+  if (result.kind === "artifact" && result.artifact) {
+    return artifactSearchHref(workspaceId, query, result.artifact.id);
+  }
+  return withWorkspacePath("/app/chat", workspaceId);
+}
 
-type GroupedProjectTasks = {
-  key: string;
-  label: string;
-  description: string;
-  items: TaskRailDisplayItem[];
-};
+function connectorLabel(connector: IntegrationProviderStatus) {
+  return connector.key.replaceAll("_", " ");
+}
 
-type SearchResultGroup = {
-  key: "project" | "task" | "document" | "artifact";
-  label: string;
-  description: string;
-  items: SearchResult[];
-};
+function compactSearchGroups(results: SearchResult[]) {
+  const groups: Array<{ key: SearchResult["kind"]; label: string; items: SearchResult[] }> = [
+    { key: "project", label: "Projects", items: [] },
+    { key: "task", label: "Tasks", items: [] },
+    { key: "document", label: "Library", items: [] },
+    { key: "artifact", label: "Artifacts", items: [] }
+  ];
+
+  for (const result of results) {
+    const group = groups.find((entry) => entry.key === result.kind);
+    group?.items.push(result);
+  }
+
+  return groups.filter((group) => group.items.length > 0);
+}
 
 export function AppSidebar({
   session,
@@ -121,36 +161,48 @@ export function AppSidebar({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
+  const searchParamKey = searchParams.toString();
   const requestedWorkspaceId = searchParams.get("workspace");
   const activeWorkspace = resolveActiveWorkspace(session, requestedWorkspaceId);
   const activeWorkspaceId = activeWorkspace?.workspace_id ?? session.workspaces[0]?.workspace_id ?? null;
+
   const [taskRailState, setTaskRailState] = useState(taskRail);
   const [taskSearchState, setTaskSearchState] = useState<ChatSearchResponse | null>(null);
   const [taskSearchLoading, setTaskSearchLoading] = useState(false);
   const [taskSearchError, setTaskSearchError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [projectFormOpen, setProjectFormOpen] = useState(false);
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isDesktopSidebar, setIsDesktopSidebar] = useState(false);
+  const [focusSearchOnExpand, setFocusSearchOnExpand] = useState(false);
+  const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [projectName, setProjectName] = useState("");
   const [projectDescription, setProjectDescription] = useState("");
   const [projectSubmitting, setProjectSubmitting] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [isDesktopSidebar, setIsDesktopSidebar] = useState(false);
-  const [focusSearchOnExpand, setFocusSearchOnExpand] = useState(false);
+  const [connectorCatalog, setConnectorCatalog] = useState<IntegrationProviderStatus[]>([]);
+  const [connectorLoading, setConnectorLoading] = useState(false);
+  const [selectedConnectors, setSelectedConnectors] = useState<string[]>([]);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const deferredSearch = useDeferredValue(search);
-  const searchParamKey = searchParams.toString();
+
   const currentThreadId = searchParams.get("thread");
-  const currentThread = taskRailState?.threads.find((thread) => thread.id === currentThreadId) ?? null;
-  const selectedProjectId = searchParams.get("project") ?? currentThread?.project_id ?? null;
-  const searchQuery = deferredSearch.trim();
-  const searchReady = searchQuery.length >= 2;
-  const searchActive = searchQuery.length > 0;
+  const selectedProjectIdFromRoute = searchParams.get("project");
+  const newTaskRequested = searchParams.get("new") === "1";
+  const deferredQuery = deferredSearch.trim();
+  const searchReady = deferredQuery.length >= 2;
+  const searchActive = deferredQuery.length > 0;
   const compactSidebar = sidebarCollapsed && isDesktopSidebar;
 
   useEffect(() => {
     setTaskRailState(taskRail);
   }, [taskRail]);
+
+  useEffect(() => {
+    if (searchActive) {
+      setSearchPanelOpen(true);
+    }
+  }, [searchActive]);
 
   useEffect(() => {
     const media = window.matchMedia("(min-width: 1280px)");
@@ -166,11 +218,10 @@ export function AppSidebar({
 
   useEffect(() => {
     try {
-      const rawValue = window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY);
-      if (!rawValue) {
-        return;
+      const stored = window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY);
+      if (stored) {
+        setSidebarCollapsed(stored === "true");
       }
-      setSidebarCollapsed(rawValue === "true");
     } catch {
       return;
     }
@@ -186,21 +237,71 @@ export function AppSidebar({
 
   useEffect(() => {
     document.body.classList.toggle("left-rail-collapsed", compactSidebar);
-    return () => {
-      document.body.classList.remove("left-rail-collapsed");
-    };
+    return () => document.body.classList.remove("left-rail-collapsed");
   }, [compactSidebar]);
 
   useEffect(() => {
     if (!focusSearchOnExpand || compactSidebar) {
       return;
     }
-    const timer = window.setTimeout(() => {
-      searchInputRef.current?.focus();
-    }, 60);
+    const timer = window.setTimeout(() => searchInputRef.current?.focus(), 90);
     setFocusSearchOnExpand(false);
     return () => window.clearTimeout(timer);
   }, [compactSidebar, focusSearchOnExpand]);
+
+  useEffect(() => {
+    if (!projectModalOpen || !activeWorkspaceId) {
+      return;
+    }
+
+    let cancelled = false;
+    setConnectorLoading(true);
+
+    void (async () => {
+      try {
+        const response = await fetch(`/api/admin/integrations?workspace_id=${activeWorkspaceId}`, {
+          cache: "no-store"
+        });
+        const payload = (await response.json().catch(() => null)) as
+          | { providers?: IntegrationProviderStatus[] }
+          | { detail?: string }
+          | null;
+
+        if (cancelled) {
+          return;
+        }
+
+        const providers =
+          response.ok && payload && "providers" in payload && Array.isArray(payload.providers)
+            ? payload.providers
+            : [];
+        setConnectorCatalog(providers.length > 0 ? providers : FALLBACK_CONNECTORS);
+      } catch {
+        if (!cancelled) {
+          setConnectorCatalog(FALLBACK_CONNECTORS);
+        }
+      } finally {
+        if (!cancelled) {
+          setConnectorLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectModalOpen, activeWorkspaceId]);
+
+  useEffect(() => {
+    if (!projectModalOpen) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [projectModalOpen]);
 
   useEffect(() => {
     if (!activeWorkspaceId) {
@@ -211,11 +312,11 @@ export function AppSidebar({
     const query = new URLSearchParams({ workspace_id: activeWorkspaceId });
     const endpoint = searchReady
       ? (() => {
-          query.set("q", searchQuery);
-          if (selectedProjectId) {
-            query.set("project_id", selectedProjectId);
+          query.set("q", deferredQuery);
+          if (selectedProjectIdFromRoute) {
+            query.set("project_id", selectedProjectIdFromRoute);
           }
-          query.set("limit", "40");
+          query.set("limit", "24");
           return `/api/chat/search?${query.toString()}`;
         })()
       : `/api/chat/task-rail?${query.toString()}`;
@@ -258,7 +359,6 @@ export function AppSidebar({
 
         if (searchReady) {
           setTaskSearchState(payload as ChatSearchResponse);
-          setTaskSearchError(null);
         } else {
           const nextTaskRail = payload as ChatTaskRailData;
           setTaskRailState({
@@ -266,7 +366,6 @@ export function AppSidebar({
             projects: sortProjects(nextTaskRail.projects ?? [])
           });
           setTaskSearchState(null);
-          setTaskSearchError(null);
         }
       } catch {
         if (!controller.signal.aborted && searchReady) {
@@ -281,153 +380,109 @@ export function AppSidebar({
     })();
 
     return () => controller.abort();
-  }, [activeWorkspaceId, pathname, searchParamKey, searchQuery, searchReady, selectedProjectId]);
+  }, [activeWorkspaceId, deferredQuery, pathname, searchReady, selectedProjectIdFromRoute, searchParamKey]);
 
   const projects = useMemo(() => sortProjects(taskRailState?.projects ?? []), [taskRailState?.projects]);
-  const projectMap = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
-  const projectLeadThreadIds = useMemo(() => {
-    const mapping = new Map<string, string>();
-    for (const thread of taskRailState?.threads ?? []) {
-      if (!thread.project_id || mapping.has(thread.project_id)) {
-        continue;
-      }
-      mapping.set(thread.project_id, thread.id);
-    }
-    return mapping;
-  }, [taskRailState?.threads]);
-
-  const filteredThreads = useMemo(() => {
-    const threads = taskRailState?.threads ?? [];
-    const normalizedQuery = searchQuery.toLowerCase();
-    if (!normalizedQuery) {
-      return threads;
-    }
-
-    return threads.filter((thread) => {
-      const haystack = [thread.title, thread.last_message_preview ?? "", thread.status]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(normalizedQuery);
+  const allThreads = useMemo(() => {
+    return [...(taskRailState?.threads ?? [])].sort((left, right) => {
+      const leftAt = left.last_activity_at ?? left.updated_at;
+      const rightAt = right.last_activity_at ?? right.updated_at;
+      return rightAt.localeCompare(leftAt) || left.title.localeCompare(right.title);
     });
-  }, [searchQuery, taskRailState?.threads]);
-
-  const displayItems = useMemo<TaskRailDisplayItem[]>(() => {
-    return filteredThreads.map((thread) => ({
-      thread,
-      highlight: null,
-      matched_by: []
-    }));
-  }, [filteredThreads]);
-
-  const scopedDisplayItems = useMemo(
-    () =>
-      selectedProjectId
-        ? displayItems.filter((item) => item.thread.project_id === selectedProjectId)
-        : displayItems,
-    [displayItems, selectedProjectId]
+  }, [taskRailState?.threads]);
+  const currentThread = useMemo(
+    () => allThreads.find((thread) => thread.id === currentThreadId) ?? null,
+    [allThreads, currentThreadId]
+  );
+  const selectedProjectId = selectedProjectIdFromRoute ?? currentThread?.project_id ?? null;
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId]
+  );
+  const groupedSearchResults = useMemo(
+    () => compactSearchGroups(taskSearchState?.results ?? []),
+    [taskSearchState?.results]
   );
 
-  const groupedProjectTasks = useMemo<GroupedProjectTasks[]>(() => {
-    if (selectedProjectId || searchActive) {
-      return [];
-    }
-
-    const grouped = new Map<string, TaskRailDisplayItem[]>();
-    for (const item of displayItems) {
-      const key = item.thread.project_id ?? "__general__";
-      if (!grouped.has(key)) {
-        grouped.set(key, []);
-      }
-      grouped.get(key)?.push(item);
-    }
-
-    const groups: GroupedProjectTasks[] = [];
-    for (const project of projects) {
-      const items = grouped.get(project.id) ?? [];
-      if (!items.length) {
-        continue;
-      }
-      groups.push({
-        key: project.id,
-        label: project.name,
-        description: project.description ?? "Project tasks",
-        items: items.slice(0, 3)
-      });
-    }
-    const generalItems = grouped.get("__general__") ?? [];
-    if (generalItems.length > 0) {
-      groups.push({
-        key: "__general__",
-        label: "General",
-        description: "Unassigned tasks",
-        items: generalItems.slice(0, 3)
-      });
-    }
-    return groups;
-  }, [displayItems, projects, searchActive, selectedProjectId]);
-  const selectedProject = selectedProjectId ? projectMap.get(selectedProjectId) ?? null : null;
-
-  const groupedSearchResults = useMemo<SearchResultGroup[]>(() => {
-    if (!searchReady) {
-      return [];
-    }
-
-    const buckets: Record<SearchResultGroup["key"], SearchResult[]> = {
-      project: [],
-      task: [],
-      document: [],
-      artifact: []
-    };
-    for (const result of taskSearchState?.results ?? []) {
-      buckets[result.kind].push(result);
-    }
-
-    const nextGroups: SearchResultGroup[] = [
-      {
-        key: "project",
-        label: "Projects",
-        description: selectedProject
-          ? `Project-level matches inside ${selectedProject.name}`
-          : "Matched initiatives and project spaces.",
-        items: buckets.project
-      },
-      {
-        key: "task",
-        label: "Tasks",
-        description: selectedProject
-          ? `Task history in ${selectedProject.name}`
-          : "Matched task history, conversations, and run outputs.",
-        items: buckets.task
-      },
-      {
-        key: "document",
-        label: "Documents",
-        description: selectedProject
-          ? `Project-linked knowledge sources for ${selectedProject.name}`
-          : "Knowledge-base sources, uploads, and retrieval memory.",
-        items: buckets.document
-      },
-      {
-        key: "artifact",
-        label: "Artifacts",
-        description: selectedProject
-          ? `Deliverables and generated files linked to ${selectedProject.name}`
-          : "Generated outputs, exports, captures, and deliverables.",
-        items: buckets.artifact
-      }
-    ];
-
-    return nextGroups.filter((group) => group.items.length > 0);
-  }, [searchReady, selectedProject, taskSearchState?.results]);
-
-  const { recent, history } = useMemo(() => splitItems(scopedDisplayItems), [scopedDisplayItems]);
-  const firstVisibleThreadId = scopedDisplayItems[0]?.thread.id ?? null;
+  const firstVisibleThreadId = allThreads[0]?.id ?? null;
   const newTaskHref = taskRailHref(activeWorkspaceId, selectedProjectId, null, true);
-  const currentFocusHref = taskRailHref(
-    activeWorkspaceId,
-    selectedProjectId,
-    currentThreadId ?? firstVisibleThreadId
+  const allTasksHref = taskRailHref(activeWorkspaceId, null, currentThreadId ?? firstVisibleThreadId);
+
+  const navItems = useMemo(
+    () => [
+      {
+        label: "New task",
+        icon: MessageSquarePlus,
+        href: newTaskHref,
+        active: pathname === "/app/chat" && newTaskRequested
+      },
+      {
+        label: "Agent",
+        icon: Bot,
+        href: withWorkspacePath("/app/agents", activeWorkspaceId),
+        active: pathname === "/app/agents"
+      },
+      {
+        label: "Library",
+        icon: BookOpen,
+        href: withWorkspacePath("/app/library", activeWorkspaceId),
+        active: pathname === "/app/library"
+      }
+    ],
+    [activeWorkspaceId, newTaskHref, newTaskRequested, pathname]
   );
+
+  const bottomItems = useMemo(
+    () => [
+      {
+        label: "Plugins",
+        icon: PlugZap,
+        href: withWorkspacePath("/app/plugins", activeWorkspaceId),
+        active: pathname === "/app/plugins"
+      },
+      {
+        label: "Automation",
+        icon: Workflow,
+        href: withWorkspacePath("/app/automations", activeWorkspaceId),
+        active: pathname === "/app/automations"
+      }
+    ],
+    [activeWorkspaceId, pathname]
+  );
+
+  function openSearch() {
+    if (compactSidebar) {
+      setSidebarCollapsed(false);
+      setFocusSearchOnExpand(true);
+      setSearchPanelOpen(true);
+      return;
+    }
+    setSearchPanelOpen(true);
+    window.setTimeout(() => searchInputRef.current?.focus(), 60);
+  }
+
+  function openProjectModal() {
+    if (compactSidebar) {
+      setSidebarCollapsed(false);
+    }
+    setProjectModalOpen(true);
+    setProjectError(null);
+  }
+
+  function closeProjectModal() {
+    setProjectModalOpen(false);
+    setProjectName("");
+    setProjectDescription("");
+    setSelectedConnectors([]);
+    setProjectError(null);
+  }
+
+  function toggleConnector(key: string) {
+    setSelectedConnectors((current) =>
+      current.includes(key) ? current.filter((value) => value !== key) : [...current, key]
+    );
+  }
+
   async function signOut() {
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/signin");
@@ -458,7 +513,8 @@ export function AppSidebar({
       const payload: ChatProjectCreatePayload = {
         workspace_id: activeWorkspaceId,
         name: projectName.trim(),
-        description: projectDescription.trim() || null
+        description: projectDescription.trim() || null,
+        connectors: selectedConnectors
       };
       const response = await fetch("/api/chat/projects", {
         method: "POST",
@@ -469,7 +525,8 @@ export function AppSidebar({
       });
       const created = (await response.json().catch(() => ({
         detail: "Project creation failed."
-      }))) as Partial<ProjectSummary> & { detail?: string };
+      }))) as Partial<ProjectSummary> & { detail?: string; metadata?: Record<string, unknown> };
+
       if (!response.ok) {
         setProjectError(created.detail ?? "Project creation failed.");
         setProjectSubmitting(false);
@@ -482,6 +539,7 @@ export function AppSidebar({
         name: String(created.name ?? payload.name),
         description: typeof created.description === "string" ? created.description : null,
         status: String(created.status ?? "active"),
+        metadata: created.metadata ?? { connectors: payload.connectors ?? [] },
         created_at: String(created.created_at ?? new Date().toISOString()),
         updated_at: String(created.updated_at ?? new Date().toISOString()),
         thread_count: Number(created.thread_count ?? 0),
@@ -490,12 +548,14 @@ export function AppSidebar({
 
       setTaskRailState((current) => ({
         workspace_id: current?.workspace_id ?? activeWorkspaceId,
-        projects: sortProjects([nextProject, ...(current?.projects ?? []).filter((project) => project.id !== nextProject.id)]),
+        projects: sortProjects([
+          nextProject,
+          ...(current?.projects ?? []).filter((project) => project.id !== nextProject.id)
+        ]),
         threads: current?.threads ?? []
       }));
-      setProjectFormOpen(false);
-      setProjectName("");
-      setProjectDescription("");
+
+      closeProjectModal();
       router.push(taskRailHref(activeWorkspaceId, nextProject.id));
       router.refresh();
     } catch {
@@ -505,351 +565,322 @@ export function AppSidebar({
     }
   }
 
-  function renderTaskItem(item: TaskRailDisplayItem, showProjectTag = false) {
-    const thread = item.thread;
-    const active =
-      pathname === "/app/chat" &&
-      (currentThreadId ? currentThreadId === thread.id : firstVisibleThreadId === thread.id);
-    const project = thread.project_id ? projectMap.get(thread.project_id) : null;
-    const showPreview = Boolean(item.highlight) || active;
+  function renderProjectRow(project: ProjectSummary | null, label = "All tasks") {
+    const active = project ? selectedProjectId === project.id : !selectedProjectId;
+    const href = project
+      ? taskRailHref(
+          activeWorkspaceId,
+          project.id,
+          currentThread?.project_id === project.id ? currentThread.id : null
+        )
+      : allTasksHref;
+    const taskCount = project?.thread_count ?? taskRailState?.threads.length ?? 0;
+
     return (
       <Link
-        key={thread.id}
-        href={taskRailHref(activeWorkspaceId, thread.project_id ?? null, thread.id)}
-        className={cn(
-          "block rounded-[16px] border px-3 py-2.5 transition",
-          active
-            ? "border-transparent bg-ink text-white"
-            : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
-        )}
+        key={project?.id ?? "__all__"}
+        href={href}
+        className={cn("sidebar-list-item", active && "sidebar-list-item-active")}
       >
-        <div className="flex items-center justify-between gap-3">
-          <p className="truncate text-sm font-medium leading-6">{thread.title}</p>
-          <span
-            className={cn(
-              "text-[10px] uppercase tracking-[0.16em]",
-              active ? "text-white/65" : "text-black/[0.42]"
-            )}
-          >
-            {thread.run_count ?? 0} runs
-          </span>
-        </div>
-        {showProjectTag && (
-          <div
-            className={cn(
-              "mt-2 inline-flex rounded-full px-2 py-1 text-[10px] uppercase tracking-[0.16em]",
-              active ? "bg-white/12 text-white/70" : "bg-black/[0.05] text-black/[0.46]"
-            )}
-          >
-            {project?.name ?? "General"}
-          </div>
-        )}
-        {thread.last_message_preview && showPreview && (
-          <p
-            className={cn(
-              "mt-1.5 truncate text-sm leading-6",
-              active ? "text-white/75" : "text-black/[0.58]"
-            )}
-          >
-            {item.highlight ?? thread.last_message_preview}
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{project?.name ?? label}</p>
+          <p className="mt-0.5 truncate text-xs text-black/[0.42]">
+            {project?.last_activity_at
+              ? `${taskCount} tasks · ${formatRelativeTime(project.last_activity_at)}`
+              : `${taskCount} tasks`}
           </p>
-        )}
-        {item.matched_by.length > 0 && (
-          <div
-            className={cn(
-              "mt-2 flex flex-wrap gap-1.5 text-[10px] uppercase tracking-[0.16em]",
-              active ? "text-white/60" : "text-black/[0.42]"
-            )}
-          >
-            {item.matched_by.map((source) => (
-              <span
-                key={`${thread.id}-${source}`}
-                className={cn(
-                  "rounded-full px-2 py-1",
-                  active ? "bg-white/12" : "bg-black/[0.05]"
-                )}
-              >
-                {source.replaceAll("_", " ")}
-              </span>
-            ))}
-          </div>
-        )}
-        <div
-          className={cn(
-            "mt-2 flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.16em]",
-            active ? "text-white/55" : "text-black/[0.4]"
-          )}
-        >
-          <span>{thread.message_count ?? 0} messages</span>
-          <span>{formatRelativeTime(thread.last_activity_at ?? thread.updated_at)}</span>
         </div>
       </Link>
     );
   }
 
-  function renderSearchResult(result: SearchResult) {
-    if (result.kind === "task" && result.thread) {
-      return renderTaskItem(
-        {
-          thread: result.thread,
-          highlight: result.highlight,
-          matched_by: result.matched_by,
-          score: result.score
-        },
-        !selectedProjectId
-      );
+  function renderThreadRow(thread: Thread) {
+    const active =
+      pathname === "/app/chat" &&
+      (currentThreadId ? currentThreadId === thread.id : firstVisibleThreadId === thread.id);
+    const project = thread.project_id ? projects.find((entry) => entry.id === thread.project_id) : null;
+
+    return (
+      <Link
+        key={thread.id}
+        href={taskRailHref(activeWorkspaceId, thread.project_id ?? null, thread.id)}
+        className={cn("sidebar-thread-row", active && "sidebar-thread-row-active")}
+      >
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{thread.title}</p>
+          <p className="mt-0.5 truncate text-xs text-black/[0.42]">
+            {project ? `${project.name} · ` : ""}
+            {formatRelativeTime(thread.last_activity_at ?? thread.updated_at)}
+          </p>
+        </div>
+      </Link>
+    );
+  }
+
+  function renderSearchRow(result: SearchResult) {
+    const title =
+      result.thread?.title ??
+      result.project?.name ??
+      result.document?.title ??
+      result.artifact?.title ??
+      "Result";
+    const subtitle =
+      result.highlight ??
+      result.project?.description ??
+      result.document?.source_type ??
+      result.artifact?.kind ??
+      "";
+
+    return (
+      <Link
+        key={`${result.kind}-${title}-${result.score}`}
+        href={searchResultHref(result, activeWorkspaceId, deferredQuery)}
+        className="sidebar-search-result"
+      >
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-black/[0.78]">{title}</p>
+          <p className="mt-0.5 truncate text-xs text-black/[0.42]">{subtitle}</p>
+        </div>
+        <span className="text-[10px] uppercase tracking-[0.16em] text-black/[0.34]">
+          {result.kind}
+        </span>
+      </Link>
+    );
+  }
+
+  function renderProjectModal() {
+    const availableConnectors = connectorCatalog.length > 0 ? connectorCatalog : FALLBACK_CONNECTORS;
+
+    if (typeof document === "undefined") {
+      return null;
     }
 
-    if (result.kind === "project" && result.project) {
-      const projectSummary = projectMap.get(result.project.id);
-      const active = selectedProjectId === result.project.id && pathname === "/app/chat";
-      return (
-        <Link
-          key={`project-search-${result.project.id}`}
-          href={taskRailHref(activeWorkspaceId, result.project.id, projectLeadThreadIds.get(result.project.id) ?? null)}
-          className={cn(
-            "block rounded-[18px] border px-3.5 py-3 transition",
-            active
-              ? "border-transparent bg-ink text-white"
-              : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
-          )}
+    return createPortal(
+      <div
+        className="sidebar-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
+        onClick={closeProjectModal}
+      >
+        <div
+          className="w-full max-w-[560px] rounded-[30px] border border-black/10 bg-white p-6 shadow-[0_40px_100px_rgba(17,19,24,0.16)]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-project-title"
+          onClick={(event) => event.stopPropagation()}
         >
-          <div className="flex items-center justify-between gap-3">
-            <p className="truncate text-sm font-medium">{result.project.name}</p>
-            <span
-              className={cn(
-                "text-[11px] uppercase tracking-[0.16em]",
-                active ? "text-white/65" : "text-black/[0.42]"
-              )}
-            >
-              {projectSummary?.thread_count ?? 0} tasks
-            </span>
-          </div>
-          <p className={cn("mt-2 text-sm leading-6", active ? "text-white/75" : "text-black/[0.58]")}>
-            {result.highlight ?? result.project.description ?? "Project-level search match"}
-          </p>
-          {result.matched_by.length > 0 && (
-            <div
-              className={cn(
-                "mt-2.5 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.16em]",
-                active ? "text-white/60" : "text-black/[0.42]"
-              )}
-            >
-              {result.matched_by.map((source) => (
-                <span
-                  key={`project-search-${result.project?.id}-${source}`}
-                  className={cn("rounded-full px-2 py-1", active ? "bg-white/12" : "bg-black/[0.05]")}
-                >
-                  {source.replaceAll("_", " ")}
-                </span>
-              ))}
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.18em] text-black/[0.38]">New project</p>
+              <h2
+                id="create-project-title"
+                className="mt-2 text-[1.9rem] font-semibold tracking-[-0.03em] text-black"
+              >
+                Create a new project
+              </h2>
+              <p className="mt-2 max-w-md text-sm leading-7 text-black/[0.6]">
+                Add a short description and pick the connectors this project should be aligned with from day one.
+              </p>
             </div>
-          )}
-        </Link>
-      );
-    }
-
-    if (result.kind === "document" && result.document) {
-      const active = pathname === "/app/knowledge";
-      return (
-        <Link
-          key={`document-search-${result.document.id}`}
-          href={knowledgeSearchHref(activeWorkspaceId, searchQuery, result.document.id)}
-          className={cn(
-            "block rounded-[18px] border px-3.5 py-3 transition",
-            active
-              ? "border-transparent bg-ink text-white"
-              : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
-          )}
-        >
-          <div className="flex items-center justify-between gap-3">
-            <p className="truncate text-sm font-medium">{result.document.title}</p>
-            <span
-              className={cn(
-                "text-[11px] uppercase tracking-[0.16em]",
-                active ? "text-white/65" : "text-black/[0.42]"
-              )}
+            <button
+              type="button"
+              onClick={closeProjectModal}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.68] transition hover:bg-black/[0.03]"
+              aria-label="Close project modal"
             >
-              {result.document.source_type}
-            </span>
+              <X className="h-4 w-4" />
+            </button>
           </div>
-          <p className={cn("mt-2 text-sm leading-6", active ? "text-white/75" : "text-black/[0.58]")}>
-            {result.highlight ?? result.document.source_uri ?? "Knowledge-base match"}
-          </p>
-          <div
-            className={cn(
-              "mt-2.5 flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.16em]",
-              active ? "text-white/55" : "text-black/[0.4]"
-            )}
-          >
-            <span>{result.document.status}</span>
-            <span>{formatRelativeTime(result.document.created_at)}</span>
-          </div>
-        </Link>
-      );
-    }
 
-    if (result.kind === "artifact" && result.artifact) {
-      const active = pathname === "/app/artifacts";
-      return (
-        <Link
-          key={`artifact-search-${result.artifact.id}`}
-          href={artifactSearchHref(activeWorkspaceId, searchQuery, result.artifact.id)}
-          className={cn(
-            "block rounded-[18px] border px-3.5 py-3 transition",
-            active
-              ? "border-transparent bg-ink text-white"
-              : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
-          )}
-        >
-          <div className="flex items-center justify-between gap-3">
-            <p className="truncate text-sm font-medium">{result.artifact.title}</p>
-            <span
-              className={cn(
-                "text-[11px] uppercase tracking-[0.16em]",
-                active ? "text-white/65" : "text-black/[0.42]"
-              )}
-            >
-              {result.artifact.kind}
-            </span>
-          </div>
-          <p className={cn("mt-2 break-all text-sm leading-6", active ? "text-white/75" : "text-black/[0.58]")}>
-            {result.highlight ?? result.artifact.storage_key}
-          </p>
-          <div
-            className={cn(
-              "mt-2.5 flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.16em]",
-              active ? "text-white/55" : "text-black/[0.4]"
-            )}
-          >
-            <span>{result.matched_by.join(" / ").replaceAll("_", " ")}</span>
-            <span>{formatRelativeTime(result.artifact.created_at)}</span>
-          </div>
-        </Link>
-      );
-    }
+          <form onSubmit={createProject} className="mt-6 space-y-5">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-black/[0.78]">Project name</label>
+              <input
+                value={projectName}
+                onChange={(event) => setProjectName(event.target.value)}
+                placeholder="Enter a project name"
+                className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none placeholder:text-black/[0.32]"
+              />
+            </div>
 
-    return null;
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-black/[0.78]">Description</label>
+              <textarea
+                value={projectDescription}
+                onChange={(event) => setProjectDescription(event.target.value)}
+                placeholder="Describe the objective, tone, or operating constraints for this project."
+                rows={5}
+                className="w-full resize-none rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm leading-7 outline-none placeholder:text-black/[0.32]"
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-sm font-medium text-black/[0.78]">Connectors</label>
+                {connectorLoading ? (
+                  <span className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-black/[0.42]">
+                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                    Loading
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {availableConnectors.map((connector) => {
+                  const selected = selectedConnectors.includes(connector.key);
+                  return (
+                    <button
+                      key={connector.key}
+                      type="button"
+                      onClick={() => toggleConnector(connector.key)}
+                      className={cn(
+                        "inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm transition",
+                        selected
+                          ? "border-black bg-black text-white"
+                          : "border-black/10 bg-white text-black/[0.68] hover:bg-black/[0.03]"
+                      )}
+                    >
+                      <span className="capitalize">{connectorLabel(connector)}</span>
+                      <span
+                        className={cn(
+                          "text-[10px] uppercase tracking-[0.16em]",
+                          selected ? "text-white/70" : "text-black/[0.42]"
+                        )}
+                      >
+                        {connector.configured ? "ready" : "optional"}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {projectError ? <p className="text-sm text-red-700">{projectError}</p> : null}
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={closeProjectModal}
+                className="rounded-full border border-black/10 px-4 py-2 text-sm text-black/[0.62] transition hover:bg-black/[0.03]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={projectSubmitting || !projectName.trim()}
+                className="inline-flex items-center gap-2 rounded-full bg-black px-5 py-2.5 text-sm text-white transition disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {projectSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FolderKanban className="h-4 w-4" />}
+                <span>Create project</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>,
+      document.body
+    );
   }
 
   if (compactSidebar) {
     return (
-      <aside className="shell-sidebar flex h-full min-h-0 flex-col gap-3 p-2.5">
-        <div className="flex items-center justify-center px-1">
-          <button
-            type="button"
-            onClick={() => setSidebarCollapsed(false)}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-white/92 text-black/[0.72] transition hover:bg-sand/45"
-            aria-label="Expand left rail"
-            title="Expand left rail"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="surface-card flex flex-col items-center gap-2 p-2.5">
-          <Link
-            href={newTaskHref}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-ink text-white transition hover:bg-ink/90"
-            aria-label={selectedProject ? `New task in ${selectedProject.name}` : "New task"}
-            title={selectedProject ? `New task in ${selectedProject.name}` : "New task"}
-          >
-            <MessageSquarePlus className="h-4 w-4" />
-          </Link>
-          <button
-            type="button"
-            onClick={() => {
-              setSidebarCollapsed(false);
-              setFocusSearchOnExpand(true);
-            }}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
-            aria-label="Open search"
-            title="Open search"
-          >
-            <Search className="h-4 w-4" />
-          </button>
-          <Link
-            href={taskRailHref(activeWorkspaceId, selectedProjectId, currentThreadId)}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
-            aria-label={selectedProject ? `${selectedProject.name} tasks` : "Project tasks"}
-            title={selectedProject ? `${selectedProject.name} tasks` : "Project tasks"}
-          >
-            <FolderOpen className="h-4 w-4" />
-          </Link>
-          <Link
-            href={currentFocusHref}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
-            aria-label="All tasks history"
-            title="All tasks history"
-          >
-            <FileSearch className="h-4 w-4" />
-          </Link>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
-          <div className="surface-card flex flex-col items-center gap-2 p-2.5">
-            {workspaceItems.map((item) => {
-              const Icon = item.icon;
-              const href = withWorkspacePath(item.href, activeWorkspaceId);
-              const active = pathname === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  href={href}
-                  className={cn(
-                    "inline-flex h-11 w-11 items-center justify-center rounded-full transition",
-                    active ? "bg-black text-white" : "bg-white/[0.65] text-black/[0.72] hover:bg-white"
-                  )}
-                  aria-label={item.label}
-                  title={item.label}
-                >
-                  <Icon className="h-4 w-4" />
-                </Link>
-              );
-            })}
+      <>
+        <aside className="shell-sidebar flex h-full min-h-0 flex-col items-center gap-3 px-2 py-3">
+          <div className="flex w-full items-center justify-between px-1">
+            <Link
+              href={withWorkspacePath("/app/chat", activeWorkspaceId)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-black text-white"
+              aria-label="Swarm"
+              title={activeWorkspace?.workspace_name ?? "Swarm"}
+            >
+              <Sparkles className="h-4 w-4" />
+            </Link>
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(false)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.68] transition hover:bg-black/[0.03]"
+              aria-label="Expand left rail"
+              title="Expand left rail"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
-        </div>
 
-        <div className="surface-card flex flex-col items-center gap-2 p-2.5">
-          <Link
-            href={withWorkspacePath("/app", activeWorkspaceId)}
-            className={cn(
-              "inline-flex h-11 w-11 items-center justify-center rounded-full transition",
-              pathname === "/app" ? "bg-black text-white" : "bg-white/[0.65] text-black/[0.72] hover:bg-white"
-            )}
-            aria-label="Workspace overview"
-            title="Workspace overview"
-          >
-            <Activity className="h-4 w-4" />
-          </Link>
-          <button
-            onClick={signOut}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white/[0.75] text-black/[0.72] transition hover:bg-white"
-            aria-label="Sign out"
-            title="Sign out"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
-        </div>
-      </aside>
+          <div className="flex w-full flex-col items-center gap-2">
+            <Link href={newTaskHref} className="sidebar-icon-button sidebar-icon-button-active" aria-label="New task" title="New task">
+              <MessageSquarePlus className="h-4 w-4" />
+            </Link>
+            <button type="button" onClick={openSearch} className="sidebar-icon-button" aria-label="Search" title="Search">
+              <Search className="h-4 w-4" />
+            </button>
+            <Link
+              href={withWorkspacePath("/app/agents", activeWorkspaceId)}
+              className={cn("sidebar-icon-button", pathname === "/app/agents" && "sidebar-icon-button-active")}
+              aria-label="Agent"
+              title="Agent"
+            >
+              <Bot className="h-4 w-4" />
+            </Link>
+            <Link
+              href={withWorkspacePath("/app/library", activeWorkspaceId)}
+              className={cn("sidebar-icon-button", pathname === "/app/library" && "sidebar-icon-button-active")}
+              aria-label="Library"
+              title="Library"
+            >
+              <BookOpen className="h-4 w-4" />
+            </Link>
+            <button type="button" onClick={openProjectModal} className="sidebar-icon-button" aria-label="New project" title="New project">
+              <FolderPlus className="h-4 w-4" />
+            </button>
+            <Link
+              href={allTasksHref}
+              className={cn("sidebar-icon-button", pathname === "/app/chat" && !searchActive && "sidebar-icon-button-active")}
+              aria-label="All tasks"
+              title="All tasks"
+            >
+              <History className="h-4 w-4" />
+            </Link>
+          </div>
+
+          <div className="mt-auto flex w-full flex-col items-center gap-2">
+            {bottomItems.map(({ label, href, icon: Icon, active }) => (
+              <Link
+                key={label}
+                href={href}
+                className={cn("sidebar-icon-button", active && "sidebar-icon-button-active")}
+                aria-label={label}
+                title={label}
+              >
+                <Icon className="h-4 w-4" />
+              </Link>
+            ))}
+            <button
+              type="button"
+              onClick={signOut}
+              className="sidebar-icon-button"
+              aria-label="Sign out"
+              title="Sign out"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
+        </aside>
+        {projectModalOpen ? renderProjectModal() : null}
+      </>
     );
   }
 
   return (
-    <aside className="shell-sidebar flex h-full min-h-0 flex-col gap-3 p-3">
-      <div className="surface-card space-y-3 p-3.5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="surface-label">Navigation</p>
-            <p className="truncate text-sm text-black/[0.54]">
+    <>
+      <aside className="shell-sidebar flex h-full min-h-0 flex-col px-3 py-4">
+        <div className="flex items-center justify-between gap-3 px-2">
+          <Link href={withWorkspacePath("/app/chat", activeWorkspaceId)} className="min-w-0">
+            <p className="text-lg font-semibold tracking-[-0.02em] text-black">swarm</p>
+            <p className="truncate text-xs uppercase tracking-[0.18em] text-black/[0.38]">
               {activeWorkspace?.workspace_name ?? "Workspace"}
             </p>
-          </div>
+          </Link>
           {isDesktopSidebar ? (
             <button
               type="button"
               onClick={() => setSidebarCollapsed(true)}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.68] transition hover:bg-black/[0.03]"
               aria-label="Collapse left rail"
               title="Collapse left rail"
             >
@@ -858,366 +889,146 @@ export function AppSidebar({
           ) : null}
         </div>
 
-        <Link
-          href={newTaskHref}
-          className="flex items-center gap-3 rounded-[18px] bg-ink px-3.5 py-3 text-sm text-white transition hover:bg-ink/90"
-        >
-          <MessageSquarePlus className="h-4 w-4" />
-          {selectedProject ? `New Task in ${selectedProject.name}` : "New Task"}
-        </Link>
+        <nav className="mt-5 space-y-1">
+          {navItems.slice(0, 1).map(({ label, href, icon: Icon, active }) => (
+            <Link key={label} href={href} className={cn("sidebar-nav-item", active && "sidebar-nav-item-active")}>
+              <Icon className="h-4 w-4" />
+              <span>{label}</span>
+            </Link>
+          ))}
+          <button
+            type="button"
+            onClick={openSearch}
+            className={cn("sidebar-nav-item w-full text-left", (searchPanelOpen || searchActive) && "sidebar-nav-item-active")}
+          >
+            <Search className="h-4 w-4" />
+            <span>Search</span>
+          </button>
+          {navItems.slice(1).map(({ label, href, icon: Icon, active }) => (
+            <Link key={label} href={href} className={cn("sidebar-nav-item", active && "sidebar-nav-item-active")}>
+              <Icon className="h-4 w-4" />
+              <span>{label}</span>
+            </Link>
+          ))}
+        </nav>
 
-        <div className="rounded-[18px] border border-black/10 bg-white px-3.5 py-3">
-          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
-            <Search className="h-3.5 w-3.5" />
-            Search
-          </div>
-          <input
-            ref={searchInputRef}
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder={
-              selectedProject
-                ? `Search ${selectedProject.name}`
-                : "Search tasks, docs, artifacts"
-            }
-            className="mt-2.5 w-full bg-transparent text-sm leading-6 outline-none placeholder:text-black/[0.35]"
-          />
+        {searchPanelOpen ? (
+          <section className="mt-4">
+            <div className="sidebar-search-shell">
+              <div className="flex items-center gap-2">
+                <Search className="h-4 w-4 text-black/[0.36]" />
+                <input
+                  ref={searchInputRef}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder={selectedProject ? `Search ${selectedProject.name}` : "Search"}
+                  className="w-full bg-transparent text-sm outline-none placeholder:text-black/[0.34]"
+                />
+              </div>
+            </div>
+            {searchActive ? (
+              <div className="mt-3 space-y-3">
+                {!searchReady ? (
+                  <p className="px-2 text-xs text-black/[0.42]">Type at least 2 characters to search.</p>
+                ) : taskSearchLoading ? (
+                  <p className="px-2 text-xs text-black/[0.42]">Searching workspace...</p>
+                ) : taskSearchError ? (
+                  <p className="px-2 text-xs text-red-700">{taskSearchError}</p>
+                ) : groupedSearchResults.length > 0 ? (
+                  groupedSearchResults.map((group) => (
+                    <div key={group.key} className="space-y-1.5">
+                      <p className="sidebar-section-title px-2">{group.label}</p>
+                      {group.items.slice(0, 5).map((item) => renderSearchRow(item))}
+                    </div>
+                  ))
+                ) : (
+                  <p className="px-2 text-xs text-black/[0.42]">No results yet for this query.</p>
+                )}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        <div className="mt-5 min-h-0 flex-1 overflow-y-auto pr-1">
+          <section className="space-y-2">
+            <div className="flex items-center justify-between px-2">
+              <p className="sidebar-section-title">Projects</p>
+              <button
+                type="button"
+                onClick={openProjectModal}
+                className="inline-flex h-7 items-center gap-1 rounded-full px-2 text-xs text-black/[0.54] transition hover:bg-black/[0.03]"
+                aria-label="New project"
+                title="New project"
+              >
+                <FolderPlus className="h-3.5 w-3.5" />
+                <span>New project</span>
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {projects.length > 0 ? (
+                projects.map((project) => renderProjectRow(project))
+              ) : (
+                <div className="px-2 py-1 text-xs text-black/[0.42]">No projects yet.</div>
+              )}
+            </div>
+          </section>
+
+          <section className="mt-6 space-y-2">
+            <div className="flex items-center justify-between px-2">
+              <p className="sidebar-section-title">All tasks</p>
+              <Link href={allTasksHref} className="text-xs text-black/[0.44] transition hover:text-black">
+                Open
+              </Link>
+            </div>
+            <div className="space-y-1.5">
+              {allThreads.length > 0 ? (
+                allThreads.map((thread) => renderThreadRow(thread))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-black/10 px-3 py-3 text-xs text-black/[0.42]">
+                  No task history yet.
+                </div>
+              )}
+            </div>
+          </section>
         </div>
 
-        {session.workspaces.length > 1 && (
-          <div className="rounded-[18px] border border-black/10 bg-white/70 px-3.5 py-3">
-            <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
-              <FolderOpen className="h-3.5 w-3.5" />
-              Workspace
-            </div>
-            <select
-              value={activeWorkspaceId ?? ""}
-              onChange={(event) => switchWorkspace(event.target.value)}
-              className="mt-2.5 w-full rounded-2xl border border-black/10 bg-white px-3 py-2.5 text-sm outline-none"
-            >
-              {session.workspaces.map((workspace) => (
-                <option key={workspace.workspace_id} value={workspace.workspace_id}>
-                  {workspace.workspace_name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-      </div>
-
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-        <section className="surface-card p-3">
-          <div className="mb-2.5 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
-            <div className="flex items-center gap-2">
-              <FolderOpen className="h-3.5 w-3.5" />
-              Projects
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setProjectFormOpen((current) => !current);
-                setProjectError(null);
-              }}
-              className="inline-flex items-center gap-1 rounded-full bg-white/70 px-2.5 py-1.5 text-[10px] uppercase tracking-[0.14em] text-black/[0.58] transition hover:bg-white"
-            >
-              <FolderPlus className="h-3.5 w-3.5" />
-              New project
-            </button>
-          </div>
-
-          {projectFormOpen && (
-            <form onSubmit={createProject} className="mb-3 rounded-[18px] border border-black/10 bg-white/70 p-3">
-              <input
-                value={projectName}
-                onChange={(event) => setProjectName(event.target.value)}
-                placeholder="Project name"
-                className="w-full rounded-2xl bg-sand/55 px-3 py-2 text-sm outline-none"
-              />
-              <textarea
-                value={projectDescription}
-                onChange={(event) => setProjectDescription(event.target.value)}
-                placeholder="Short description"
-                className="mt-3 min-h-[76px] w-full resize-none rounded-2xl bg-sand/55 px-3 py-2 text-sm outline-none"
-              />
-              {projectError && <p className="mt-3 text-sm text-red-700">{projectError}</p>}
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProjectFormOpen(false);
-                    setProjectError(null);
-                  }}
-                  className="rounded-full bg-black/[0.05] px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.58]"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={projectSubmitting || !projectName.trim()}
-                  className="inline-flex items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs uppercase tracking-[0.14em] text-white disabled:opacity-60"
-                >
-                  {projectSubmitting && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
-                  Create project
-                </button>
-              </div>
-            </form>
-          )}
-
-          <div className="space-y-1.5">
-            <Link
-              href={taskRailHref(activeWorkspaceId, null, currentThreadId)}
-              className={cn(
-                "block rounded-[16px] border px-3 py-2.5 transition",
-                !selectedProjectId
-                  ? "border-transparent bg-black text-white"
-                  : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
-              )}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-medium leading-6">All Projects</p>
-                <span className={cn("text-[10px] uppercase tracking-[0.16em]", !selectedProjectId ? "text-white/60" : "text-black/[0.42]")}>
-                  {taskRailState?.threads.length ?? 0} tasks
-                </span>
-              </div>
-              {!selectedProjectId ? (
-                <div className="mt-1.5 text-[10px] uppercase tracking-[0.16em] text-white/55">
-                  Cross-project task view
-                </div>
-              ) : null}
-            </Link>
-
-            {projects.length > 0 ? (
-              projects.map((project) => {
-                const active = selectedProjectId === project.id;
-                return (
-                  <Link
-                    key={project.id}
-                    href={taskRailHref(activeWorkspaceId, project.id, projectLeadThreadIds.get(project.id) ?? null)}
-                    className={cn(
-                      "block rounded-[16px] border px-3 py-2.5 transition",
-                      active
-                        ? "border-transparent bg-black text-white"
-                        : "border-black/10 bg-white/[0.58] text-black/[0.72] hover:bg-white"
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="truncate text-sm font-medium leading-6">{project.name}</p>
-                      <span
-                        className={cn(
-                          "text-[10px] uppercase tracking-[0.16em]",
-                          active ? "text-white/60" : "text-black/[0.42]"
-                        )}
-                      >
-                        {project.thread_count} tasks
-                      </span>
-                    </div>
-                    <div
-                      className={cn(
-                        "mt-1.5 truncate text-[10px] uppercase tracking-[0.16em]",
-                        active ? "text-white/55" : "text-black/[0.42]"
-                      )}
-                    >
-                      {project.description
-                        ? active
-                          ? project.description
-                          : project.last_activity_at
-                            ? `Active ${formatRelativeTime(project.last_activity_at)}`
-                            : "No task runs yet"
-                        : project.last_activity_at
-                          ? `Active ${formatRelativeTime(project.last_activity_at)}`
-                          : "No task runs yet"}
-                    </div>
-                  </Link>
-                );
-              })
-            ) : (
-              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
-                Create the first project to organize task history by initiative.
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="surface-card p-3">
-          <div className="mb-2.5 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
-            <History className="h-3.5 w-3.5" />
-            {searchActive
-              ? selectedProject
-                ? `Search in ${selectedProject.name}`
-                : "Global Search"
-              : selectedProject
-                ? `Recent Tasks in ${selectedProject.name}`
-                : "Recent Tasks"}
-          </div>
-          <div className="space-y-2">
-            {searchActive && !searchReady ? (
-              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
-                Type at least 2 characters to search projects, tasks, documents, and artifacts.
-              </div>
-            ) : searchReady && taskSearchLoading ? (
-              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
-                Searching across the workspace...
-              </div>
-            ) : searchReady && taskSearchError ? (
-              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
-                {taskSearchError}
-              </div>
-            ) : searchReady ? (
-              groupedSearchResults.length > 0 ? (
-                <div className="space-y-4">
-                  <div className="rounded-[18px] border border-black/10 bg-white/60 p-3 text-sm text-black/[0.66]">
-                    <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.16em] text-black/[0.42]">
-                      <span>{taskSearchState?.total_results ?? 0} matches</span>
-                      {taskSearchState?.result_counts?.project ? (
-                        <span className="rounded-full bg-black/[0.05] px-2 py-1">
-                          {taskSearchState.result_counts.project} projects
-                        </span>
-                      ) : null}
-                      {taskSearchState?.result_counts?.task ? (
-                        <span className="rounded-full bg-black/[0.05] px-2 py-1">
-                          {taskSearchState.result_counts.task} tasks
-                        </span>
-                      ) : null}
-                      {taskSearchState?.result_counts?.document ? (
-                        <span className="rounded-full bg-black/[0.05] px-2 py-1">
-                          {taskSearchState.result_counts.document} docs
-                        </span>
-                      ) : null}
-                      {taskSearchState?.result_counts?.artifact ? (
-                        <span className="rounded-full bg-black/[0.05] px-2 py-1">
-                          {taskSearchState.result_counts.artifact} artifacts
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="mt-2 leading-6">
-                      {selectedProject
-                        ? `Showing broader search results connected to ${selectedProject.name}.`
-                        : "Showing broader workspace search results across projects, task history, knowledge, and deliverables."}
-                    </p>
-                  </div>
-                  {groupedSearchResults.map((group) => (
-                    <div key={group.key} className="space-y-3">
-                      <div className="rounded-[18px] border border-black/10 bg-white/60 p-3">
-                        <p className="text-sm font-medium text-black/[0.82]">{group.label}</p>
-                        <p className="mt-1 text-xs uppercase tracking-[0.16em] text-black/[0.44]">
-                          {group.description}
-                        </p>
-                      </div>
-                      {group.items.map((item) => renderSearchResult(item))}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
-                  {selectedProject
-                    ? "No projects, tasks, documents, or artifacts matched inside this project scope."
-                    : "No projects, tasks, documents, or artifacts matched the current search."}
-                </div>
-              )
-            ) : recent.length > 0 ? (
-              recent.map((item) => renderTaskItem(item, Boolean(searchActive && !selectedProjectId)))
-            ) : (
-              <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
-                {selectedProject
-                  ? "This project does not have task history yet. Start its first task from the rail."
-                  : "No task history yet. Start the first task from the rail."}
-              </div>
-            )}
-          </div>
-        </section>
-
-        {!searchActive && !selectedProjectId && groupedProjectTasks.length > 0 && (
-          <section className="surface-card p-3.5">
-            <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
-              <Layers3 className="h-3.5 w-3.5" />
-              Project Task Groups
-            </div>
-            <div className="space-y-3">
-              {groupedProjectTasks.map((group) => (
-                <div key={group.key} className="rounded-[18px] border border-black/10 bg-white/60 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium text-black/[0.82]">{group.label}</p>
-                      <p className="mt-1 text-xs uppercase tracking-[0.16em] text-black/[0.44]">
-                        {group.description}
-                      </p>
-                    </div>
-                    <Link
-                      href={taskRailHref(activeWorkspaceId, group.key === "__general__" ? null : group.key)}
-                      className="rounded-full bg-sand/70 px-3 py-1.5 text-[10px] uppercase tracking-[0.14em] text-black/[0.62] transition hover:bg-sand"
-                    >
-                      Open
-                    </Link>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {group.items.map((item) => renderTaskItem(item))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {!searchActive && (
-          <section className="surface-card p-3.5">
-            <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">
-              <FileSearch className="h-3.5 w-3.5" />
-              {selectedProject ? `${selectedProject.name} History` : "All Tasks"}
-            </div>
-            <div className="space-y-3">
-              {history.map((item) => renderTaskItem(item))}
-              {history.length === 0 && recent.length > 0 && (
-                <div className="rounded-[18px] border border-dashed border-black/10 bg-white/55 px-3.5 py-3 text-sm text-black/[0.58]">
-                  More task history will appear here as the workspace grows.
-                </div>
-              )}
-            </div>
-          </section>
-        )}
-
-        <section className="surface-card p-3.5">
-          <p className="mb-3 text-[11px] uppercase tracking-[0.18em] text-black/[0.42]">Workspace Surfaces</p>
-          <nav className="space-y-2">
-            {workspaceItems.map((item) => {
-              const Icon = item.icon;
-              const href = withWorkspacePath(item.href, activeWorkspaceId);
-              const active = pathname === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  href={href}
-                  className={cn(
-                    "flex items-center gap-3 rounded-[18px] px-3.5 py-2.5 text-sm transition",
-                    active ? "bg-black text-white" : "bg-white/[0.55] text-black/70 hover:bg-white"
-                  )}
-                >
-                  <Icon className="h-4 w-4" />
-                  {item.label}
-                </Link>
-              );
-            })}
+        <div className="mt-4 border-t border-black/8 pt-4">
+          <nav className="space-y-1">
+            {bottomItems.map(({ label, href, icon: Icon, active }) => (
+              <Link key={label} href={href} className={cn("sidebar-nav-item", active && "sidebar-nav-item-active")}>
+                <Icon className="h-4 w-4" />
+                <span>{label}</span>
+              </Link>
+            ))}
           </nav>
-        </section>
-      </div>
 
-      <div className="surface-card space-y-2 p-3">
-        <Link
-          href={withWorkspacePath("/app", activeWorkspaceId)}
-            className={cn(
-            "flex items-center gap-3 rounded-[18px] px-3.5 py-2.5 text-sm transition",
-            pathname === "/app" ? "bg-black text-white" : "bg-white/[0.55] text-black/70 hover:bg-white"
-          )}
-        >
-          <Activity className="h-4 w-4" />
-          Workspace Overview
-        </Link>
-        <button
-          onClick={signOut}
-          className="w-full rounded-[18px] border border-black/10 bg-white/75 px-3.5 py-2.5 text-left text-sm text-black/[0.7] transition hover:bg-white"
-        >
-          Sign out
-        </button>
-      </div>
-    </aside>
+          {session.workspaces.length > 1 ? (
+            <div className="mt-4 px-2">
+              <select
+                value={activeWorkspaceId ?? ""}
+                onChange={(event) => switchWorkspace(event.target.value)}
+                className="w-full rounded-2xl border border-black/10 bg-white px-3 py-2 text-sm text-black/[0.66] outline-none"
+              >
+                {session.workspaces.map((workspace) => (
+                  <option key={workspace.workspace_id} value={workspace.workspace_id}>
+                    {workspace.workspace_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={signOut}
+            className="sidebar-nav-item mt-3 w-full text-left text-black/[0.62]"
+          >
+            <LogOut className="h-4 w-4" />
+            <span>Sign out</span>
+          </button>
+        </div>
+      </aside>
+      {projectModalOpen ? renderProjectModal() : null}
+    </>
   );
 }

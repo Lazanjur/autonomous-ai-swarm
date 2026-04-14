@@ -15,10 +15,11 @@ class AlibabaCompatibleProvider:
         self.client = AsyncOpenAI(
             api_key=settings.alibaba_api_key or "missing",
             base_url=settings.alibaba_openai_base_url,
+            timeout=float(settings.external_request_timeout_seconds),
         )
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
-        if not settings.alibaba_api_key:
+        if not settings.alibaba_api_key_configured:
             raise RuntimeError("Alibaba API key is not configured.")
 
         started = perf_counter()
@@ -40,7 +41,7 @@ class AlibabaCompatibleProvider:
         )
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
-        if not settings.alibaba_api_key:
+        if not settings.alibaba_api_key_configured:
             raise RuntimeError("Alibaba API key is not configured.")
 
         response = await self.client.embeddings.create(

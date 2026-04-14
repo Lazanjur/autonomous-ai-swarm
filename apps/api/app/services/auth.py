@@ -61,14 +61,14 @@ class AuthService:
         )
         session.add_all([organization, user, workspace, membership])
         await session.flush()
-        auth_session = await self._issue_session(
+        auth_session, plain_token = await self._issue_session(
             session,
             user=user,
             user_agent=user_agent,
             ip_address=ip_address,
         )
         await session.commit()
-        return await self._build_session_read(session, user, auth_session, auth_session.plain_token)
+        return await self._build_session_read(session, user, auth_session, plain_token)
 
     async def login(
         self,
@@ -86,14 +86,14 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive.")
 
         user.last_login_at = utc_now()
-        auth_session = await self._issue_session(
+        auth_session, plain_token = await self._issue_session(
             session,
             user=user,
             user_agent=user_agent,
             ip_address=ip_address,
         )
         await session.commit()
-        return await self._build_session_read(session, user, auth_session, auth_session.plain_token)
+        return await self._build_session_read(session, user, auth_session, plain_token)
 
     async def resolve_session(
         self,
@@ -248,7 +248,7 @@ class AuthService:
         user: User,
         user_agent: str | None,
         ip_address: str | None,
-    ) -> UserSession:
+    ) -> tuple[UserSession, str]:
         token, token_hash, expires_at = create_session_token()
         auth_session = UserSession(
             user_id=user.id,
@@ -257,10 +257,9 @@ class AuthService:
             user_agent=user_agent,
             ip_address=ip_address,
         )
-        auth_session.plain_token = token  # type: ignore[attr-defined]
         session.add(auth_session)
         await session.flush()
-        return auth_session
+        return auth_session, token
 
     async def _build_session_read(
         self,

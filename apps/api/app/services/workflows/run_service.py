@@ -1335,14 +1335,23 @@ class RunService:
         workspace_id,
         name: str,
         description: str | None = None,
+        connectors: list[str] | None = None,
         actor_id=None,
     ) -> Project:
+        normalized_connectors: list[str] = []
+        for connector in connectors or []:
+            compact = str(connector or "").strip().lower()
+            if compact and compact not in normalized_connectors:
+                normalized_connectors.append(compact[:64])
         project = Project(
             workspace_id=workspace_id,
             name=name.strip()[:255] or "New project",
             description=(description or "").strip() or None,
             status="active",
-            metadata={"shared_memory": self._empty_shared_memory()},
+            metadata={
+                "shared_memory": self._empty_shared_memory(),
+                "connectors": normalized_connectors,
+            },
         )
         session.add(project)
         await session.flush()
@@ -1353,7 +1362,7 @@ class RunService:
                 action="project.created",
                 resource_type="project",
                 resource_id=str(project.id),
-                details={"name": project.name},
+                details={"name": project.name, "connectors": normalized_connectors},
             )
         )
         await session.commit()

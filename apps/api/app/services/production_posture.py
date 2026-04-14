@@ -33,7 +33,7 @@ def production_configuration_errors(settings: Settings) -> list[str]:
         errors.append("ENABLE_DEMO_MODE must be false in production.")
     if settings.local_provider_fallback_active:
         errors.append("ALLOW_LOCAL_PROVIDER_FALLBACK must be false in production.")
-    if not settings.alibaba_api_key:
+    if not settings.alibaba_api_key_configured:
         errors.append("ALIBABA_API_KEY must be configured in production.")
     if _looks_like_placeholder(settings.secret_key):
         errors.append("SECRET_KEY still appears to be a placeholder.")
@@ -68,7 +68,7 @@ def render_prometheus_metrics(
         f"swarm_database_up {1 if database_ok else 0}",
         "# HELP swarm_models_configured Whether upstream model credentials are configured.",
         "# TYPE swarm_models_configured gauge",
-        f"swarm_models_configured {1 if bool(settings.alibaba_api_key) else 0}",
+        f"swarm_models_configured {1 if settings.alibaba_api_key_configured else 0}",
         "# HELP swarm_rate_limit_enabled Whether request rate limiting is enabled.",
         "# TYPE swarm_rate_limit_enabled gauge",
         f"swarm_rate_limit_enabled {1 if settings.rate_limit_enabled else 0}",

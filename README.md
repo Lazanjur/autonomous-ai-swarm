@@ -24,6 +24,48 @@ Autonomous AI Swarm is a monorepo for an enterprise-grade multi-agent AI platfor
 docker compose up --build
 ```
 
+If you keep the Qwen key only in PowerShell instead of writing it into `.env`, export it in the same shell before starting Docker:
+
+```powershell
+$env:ALIBABA_API_KEY="your-real-key"
+docker compose up --build
+```
+
+The API container now prefers the PowerShell `ALIBABA_API_KEY` value over the placeholder in `.env`, so local chat can use the real Qwen provider without editing the file.
+
+If you want local chat to use the real provider or fail loudly instead of silently falling back to the mock model, also set:
+
+```powershell
+$env:ALLOW_LOCAL_PROVIDER_FALLBACK="false"
+```
+
+NotebookLM-backed deliverables are also supported. For queries that ask for an audio overview, podcast, video overview, mind map, report, flashcards, quizzes, infographics, slide decks, or data tables, the orchestrator now prefers NotebookLM first and falls back only when NotebookLM cannot complete the job or you explicitly ask for a non-NotebookLM variant.
+
+Install NotebookLM support in the API environment with:
+
+```bash
+cd apps/api
+pip install "notebooklm-py[browser]"
+```
+
+If first-time NotebookLM login is needed, the package uses a browser-backed session. You can also set:
+
+```bash
+NOTEBOOKLM_ENABLED=true
+NOTEBOOKLM_STORAGE_DIR=
+```
+
+The storage directory is optional; when unset, the backend uses `var/notebooklm`.
+
+For the local Docker stack, NotebookLM storage is now bind-mounted from `./var/notebooklm` on the host into the API container at `/workspace/var/notebooklm`. That means a one-time NotebookLM login can be reused across container rebuilds as long as the login flow also points NotebookLM at the same storage home.
+
+Recommended local flow:
+
+1. Start the stack once with `docker compose up --build`.
+2. Point NotebookLM's home/storage directory at `./var/notebooklm`.
+3. Complete the package's browser-backed NotebookLM login flow one time.
+4. Restart the API container if needed, then let the app reuse that stored NotebookLM session for future NotebookLM-native deliverables.
+
 4. Open:
 
 - Web: `http://localhost:3000`
@@ -73,7 +115,7 @@ Demo auth is intended for local and non-production environments.
 
 After startup, sign in at `http://localhost:3000/signin` with:
 
-- email: `demo@swarm.local`
+- email: `demo@swarm.dev`
 - password: `DemoPass123!`
 
 Override these with `DEMO_USER_EMAIL`, `DEMO_USER_PASSWORD`, and the matching `NEXT_PUBLIC_*` values.
@@ -199,6 +241,13 @@ uvicorn app.main:app --reload
 - Slack delivery supports incoming webhooks or a bot token using `chat.postMessage`.
 - Calendar delivery supports Google Calendar or Microsoft Graph.
 - All live outbound integrations remain gated behind explicit approval language and continue to persist durable outbox/audit records even when delivery is performed.
+
+## NotebookLM deliverables
+
+- NotebookLM is now the preferred path for NotebookLM-native outputs: audio overviews, podcasts, video overviews, mind maps, reports, flashcards, quizzes, infographics, slide decks, and data tables.
+- The backend uses a dedicated `notebooklm_studio` tool that can create a notebook, attach URL or file sources, upload an execution brief, generate the requested deliverable, and download the resulting artifact into `var/artifacts/notebooklm/...`.
+- In local Docker development, the shared NotebookLM session home lives under `./var/notebooklm`, so a one-time NotebookLM login can persist across rebuilds.
+- If NotebookLM is unavailable, not installed, or not authenticated yet, the run reports that cleanly and only then falls back to another generation route.
 
 ## Security notes
 

@@ -1,10 +1,10 @@
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
 
@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     automation_retry_backoff_seconds: int = 45
     automation_notification_history_limit: int = 12
     external_request_timeout_seconds: int = 15
+    notebooklm_enabled: bool = Field(default=True, alias="NOTEBOOKLM_ENABLED")
+    notebooklm_storage_dir: str | None = Field(default=None, alias="NOTEBOOKLM_STORAGE_DIR")
     orchestrator_tool_loop_enabled: bool = True
     orchestrator_max_tool_iterations: int = 3
     orchestrator_max_consecutive_tool_failures: int = 2
@@ -143,13 +145,13 @@ class Settings(BaseSettings):
 
     default_organization_name: str = "Demo Organization"
     default_workspace_name: str = "Strategy Lab"
-    demo_user_email: str = "demo@swarm.local"
+    demo_user_email: str = "demo@swarm.dev"
     demo_user_password: str = "DemoPass123!"
-    cors_origins: list[str] = Field(
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"],
         alias="CORS_ORIGINS",
     )
-    trusted_hosts: list[str] = Field(
+    trusted_hosts: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["localhost", "127.0.0.1", "api", "testserver"],
         alias="TRUSTED_HOSTS",
     )
@@ -187,6 +189,11 @@ class Settings(BaseSettings):
         if self.allow_local_provider_fallback is not None:
             return self.allow_local_provider_fallback
         return not self.is_production
+
+    @property
+    def alibaba_api_key_configured(self) -> bool:
+        candidate = (self.alibaba_api_key or "").strip()
+        return bool(candidate and candidate != "replace-with-real-key")
 
 
 @lru_cache

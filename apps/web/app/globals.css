@@ -77,6 +77,16 @@ body.workbench-focus-mode .app-shell-grid > :first-child {
   display: none !important;
 }
 
+body.workbench-focus-mode .app-shell-frame {
+  background: rgba(255, 255, 255, 0.82);
+}
+
+body.workbench-focus-mode .shell-main {
+  padding: 0.4rem !important;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: none;
+}
+
 .shell-sidebar {
   @apply rounded-[28px] border border-black/10 backdrop-blur-xl;
   min-height: 0;
@@ -119,6 +129,90 @@ body.workbench-focus-mode .app-shell-grid > :first-child {
 
 .surface-label {
   @apply text-[12px] uppercase tracking-[0.16em] text-black/[0.45];
+}
+
+.sidebar-nav-item {
+  @apply flex items-center gap-3 rounded-[16px] px-3 py-2.5 text-sm text-black/[0.7] transition;
+}
+
+.sidebar-nav-item:hover {
+  background: rgba(17, 19, 24, 0.04);
+}
+
+.sidebar-nav-item-active {
+  background: rgba(17, 19, 24, 0.07);
+  color: rgba(17, 19, 24, 0.9);
+}
+
+.sidebar-section-title {
+  @apply text-[11px] uppercase tracking-[0.16em] text-black/[0.4];
+}
+
+.sidebar-search-shell {
+  @apply rounded-[18px] border border-black/10 bg-white px-3 py-2.5;
+  box-shadow: 0 8px 22px rgba(30, 25, 18, 0.04);
+}
+
+.sidebar-list-item,
+.sidebar-thread-row,
+.sidebar-search-result {
+  @apply flex items-center gap-2.5 rounded-[14px] px-2.5 py-2 transition;
+}
+
+.sidebar-list-item::before,
+.sidebar-thread-row::before {
+  content: "";
+  flex-shrink: 0;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: rgba(17, 19, 24, 0.22);
+  box-shadow: 0 0 0 5px rgba(17, 19, 24, 0.03);
+}
+
+.sidebar-list-item:hover,
+.sidebar-thread-row:hover,
+.sidebar-search-result:hover {
+  background: rgba(17, 19, 24, 0.04);
+}
+
+.sidebar-list-item-active,
+.sidebar-thread-row-active {
+  background: rgba(17, 19, 24, 0.07);
+}
+
+.sidebar-list-item-active::before,
+.sidebar-thread-row-active::before {
+  background: rgba(17, 19, 24, 0.8);
+  box-shadow: 0 0 0 5px rgba(17, 19, 24, 0.05);
+}
+
+.sidebar-list-item > div,
+.sidebar-thread-row > div {
+  min-width: 0;
+}
+
+.sidebar-list-item > div p:last-child,
+.sidebar-thread-row > div p:last-child {
+  display: none;
+}
+
+.sidebar-icon-button {
+  @apply inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.68] transition;
+}
+
+.sidebar-icon-button:hover {
+  background: rgba(17, 19, 24, 0.04);
+}
+
+.sidebar-icon-button-active {
+  background: rgba(17, 19, 24, 0.95);
+  color: white;
+}
+
+.sidebar-modal-backdrop {
+  background: rgba(17, 19, 24, 0.22);
+  backdrop-filter: blur(8px);
 }
 
 .surface-subcopy {

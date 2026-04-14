@@ -37,6 +37,16 @@ def test_orchestrator_execution_batches_respect_dependencies():
     assert [task.key for task in batches[3]] == ["content"]
 
 
+def test_orchestrator_selects_content_for_notebooklm_native_deliverables():
+    orchestrator = SupervisorOrchestrator()
+
+    selected = orchestrator._select_agent_keys(
+        "Create a podcast audio overview and a flashcard set from this material."
+    )
+
+    assert "content" in selected
+
+
 def test_orchestrator_collects_deduplicated_grounded_citations():
     orchestrator = SupervisorOrchestrator()
 
@@ -141,7 +151,9 @@ async def test_orchestrator_execute_uses_validation_driven_escalation(monkeypatc
 
     result = await orchestrator.execute("Build an internal API for the team.")
 
-    assert result["final_response"] == "Supervisor final synthesis"
+    assert "What I'm doing" in result["final_response"]
+    assert "Answer\nSupervisor final synthesis" in result["final_response"]
+    assert "Three ways to go further" in result["final_response"]
     assert result["execution_batches"] == [["coding"], ["content"]]
     assert result["steps"][0]["validation"]["escalated_from_fast"] is True
     assert result["steps"][0]["dependencies"] == []
@@ -231,6 +243,8 @@ async def test_orchestrator_appends_grounding_references_when_synthesis_omits_in
 
     result = await orchestrator.execute("Research the workspace launch readiness.")
 
+    assert "What I'm doing" in result["final_response"]
+    assert "Three ways to go further" in result["final_response"]
     assert "Grounding references: [S1]" in result["final_response"]
     assert result["citations"][0]["reference_id"] == "S1"
 
@@ -432,6 +446,73 @@ async def test_orchestrator_tool_loop_falls_back_when_planner_is_not_json(monkey
         )
     ]
     assert result["tools"][0]["tool"] == "web_search"
+
+
+def test_orchestrator_heuristic_prefers_notebooklm_for_native_deliverables():
+    orchestrator = SupervisorOrchestrator()
+    task = PlannedTask(
+        key="content",
+        objective="Generate a polished deliverable for the user.",
+        reason="The request asks for a finished artifact.",
+        expected_output="A complete deliverable.",
+        plan_index=0,
+    )
+
+    decision = orchestrator._heuristic_tool_loop_decision(
+        task=task,
+        prompt="Create a podcast audio overview about the uploaded material.",
+        available_tools=orchestrator.tools.list_for_agent("content"),
+        tool_context=[
+            {
+                "tool": "web_search",
+                "status": "completed",
+                "results": [{"title": "Source", "url": "https://example.com/source"}],
+            }
+        ],
+        raw_content="",
+        planner_error="Planner response was not valid JSON.",
+    )
+
+    assert decision.tool_name == "notebooklm_studio"
+    assert decision.arguments["output_type"] == "audio_overview"
+    assert decision.arguments["source_urls"] == ["https://example.com/source"]
+
+
+def test_orchestrator_promotes_successful_notebooklm_output_in_final_response():
+    orchestrator = SupervisorOrchestrator()
+
+    final_response = orchestrator._compose_autonomous_response(
+        prompt="Create a flashcards set from the workspace knowledge.",
+        content="Fallback provider generated a structured response for model `qwen3.5-flash`.",
+        step_results=[
+            {
+                "agent_key": "content",
+                "agent_name": "Content Agent",
+                "tools": [
+                    {
+                        "tool": "notebooklm_studio",
+                        "operation": "generate_deliverable",
+                        "status": "completed",
+                        "output_type": "flashcards",
+                        "notebook_name": "Workspace study guide",
+                        "sources": [{"kind": "url", "value": "https://example.com/source"}],
+                        "artifacts": [
+                            {
+                                "file_name": "flashcards.json",
+                                "storage_key": "notebooklm/test/flashcards.json",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        scratchpad=SimpleNamespace(grounding_sources=[], completed_agents=[], findings=[], risks=[], open_questions=[]),
+    )
+
+    assert "NotebookLM completed the flashcards run" in final_response
+    assert "flashcards.json" in final_response
+    assert "Fallback provider generated" not in final_response
+    assert "Refine this deliverable into a second NotebookLM pass" in final_response
 
 
 @pytest.mark.asyncio

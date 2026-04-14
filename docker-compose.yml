@@ -49,6 +49,14 @@ services:
     container_name: swarm-api
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/autonomous_ai_swarm
+      ASYNC_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/autonomous_ai_swarm
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      ALIBABA_API_KEY: ${ALIBABA_API_KEY:-}
+      ALLOW_LOCAL_PROVIDER_FALLBACK: ${ALLOW_LOCAL_PROVIDER_FALLBACK:-}
+      NOTEBOOKLM_STORAGE_DIR: /workspace/var/notebooklm
     ports:
       - "8000:8000"
     depends_on:
@@ -58,6 +66,7 @@ services:
         condition: service_healthy
     volumes:
       - artifact-data:/workspace/var/artifacts
+      - ./var/notebooklm:/workspace/var/notebooklm
 
   web:
     build:
@@ -66,6 +75,8 @@ services:
     container_name: swarm-web
     env_file:
       - .env
+    environment:
+      INTERNAL_API_URL: http://api:8000
     ports:
       - "3000:3000"
     depends_on:

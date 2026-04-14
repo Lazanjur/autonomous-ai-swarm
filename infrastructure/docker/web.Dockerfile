@@ -1,6 +1,5 @@
 FROM node:20-alpine
 
-ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
 WORKDIR /workspace
@@ -13,6 +12,8 @@ COPY apps/web /workspace/apps/web
 
 WORKDIR /workspace/apps/web
 RUN npm run build
+
+ENV NODE_ENV=production
 
 EXPOSE 3000
 CMD ["npm", "run", "start"]

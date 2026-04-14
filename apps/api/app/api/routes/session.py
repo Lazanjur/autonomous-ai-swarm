@@ -16,7 +16,7 @@ async def demo_session(session: AsyncSession = Depends(get_session)) -> dict:
     workspace = await ensure_demo_workspace(session)
     return {
         "user": {
-            "email": "demo@swarm.local",
+            "email": "demo@swarm.dev",
             "name": "Demo Operator",
             "role": "owner",
         },

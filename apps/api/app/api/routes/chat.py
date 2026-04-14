@@ -621,6 +621,7 @@ async def create_project(
             workspace_id=payload.workspace_id,
             name=payload.name,
             description=payload.description,
+            connectors=payload.connectors,
             actor_id=context.user.id,
         )
     except ValueError as exc:

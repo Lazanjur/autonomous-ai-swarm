@@ -3,256 +3,73 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Activity,
+  Bot,
   BrainCircuit,
-  CheckCircle2,
-  Clock3,
+  CalendarDays,
   LoaderCircle,
-  Radar,
+  Mail,
+  MessageSquareShare,
   RefreshCw,
-  ShieldAlert,
   Sparkles,
-  TriangleAlert,
-  Wrench,
-  Zap,
+  Webhook,
+  Workflow
 } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
-import type { AgentRecentStep, AgentSurface, ChatAgentsData } from "@/lib/types";
+import type { AgentSurface, ChatAgentsData } from "@/lib/types";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { withWorkspacePath } from "@/lib/workspace";
 
+const heroFeatures = [
+  {
+    title: "Persistent memory and computer",
+    description: "Keep context, workbench state, and approvals connected while tasks stay live."
+  },
+  {
+    title: "Specialist operators",
+    description: "Route work across research, coding, analysis, and content agents with clear ownership."
+  },
+  {
+    title: "Custom skills and connectors",
+    description: "Plug your agent into external systems, reusable tools, and guided workflows."
+  },
+  {
+    title: "Always-on deployment",
+    description: "Move from chat to automations so the same agent stack keeps working between sessions."
+  }
+];
+
+const heroConnectors = [
+  { label: "Slack", icon: MessageSquareShare, tone: "bg-[#4A154B] text-white" },
+  { label: "Email", icon: Mail, tone: "bg-[#0A66FF] text-white" },
+  { label: "Calendar", icon: CalendarDays, tone: "bg-[#0F766E] text-white" },
+  { label: "Webhook", icon: Webhook, tone: "bg-black text-white" }
+];
+
 function healthTone(state: string) {
   if (state === "live") {
-    return "bg-emerald-600 text-white border-transparent";
+    return "bg-emerald-600 text-white";
   }
   if (state === "active") {
-    return "bg-blue-600 text-white border-transparent";
+    return "bg-blue-600 text-white";
   }
   if (state === "idle") {
-    return "bg-amber-500 text-white border-transparent";
+    return "bg-amber-500 text-white";
   }
-  return "bg-black/[0.08] text-black/[0.62] border-transparent";
+  return "bg-black/[0.06] text-black/[0.6]";
 }
 
-function healthLabel(state: string) {
-  if (state === "live") {
-    return "Live now";
-  }
-  if (state === "active") {
-    return "Active";
-  }
-  if (state === "idle") {
-    return "Idle";
-  }
-  return "Quiet";
-}
-
-function activityTone(status: string) {
-  if (status === "completed") {
-    return "bg-emerald-100 text-emerald-900";
-  }
-  if (status === "failed") {
-    return "bg-red-100 text-red-900";
-  }
-  if (status === "running") {
-    return "bg-blue-100 text-blue-900";
-  }
-  if (status === "escalating") {
-    return "bg-amber-100 text-amber-900";
-  }
-  return "bg-black/[0.05] text-black/[0.62]";
-}
-
-function confidenceWidth(value: number) {
-  return `${Math.max(6, Math.min(100, Math.round(value * 100)))}%`;
-}
-
-function compactText(value: string | null | undefined, limit = 140) {
-  const compact = (value ?? "").replace(/\s+/g, " ").trim();
-  if (!compact) {
-    return "";
-  }
-  return compact.length > limit ? `${compact.slice(0, limit)}...` : compact;
-}
-
-function stepLabel(step: AgentRecentStep) {
-  return compactText(
-    step.summary || step.validation_summary || `${step.thread_title} step update`,
-    120
-  );
-}
-
-function AgentHealthCard({ agent }: { agent: AgentSurface }) {
-  const statusEntries = Object.entries(agent.status_breakdown ?? {}).filter(([, count]) => count > 0);
+function compactSummary(agent: AgentSurface) {
   return (
-    <article className="rounded-[26px] border border-black/10 bg-white/78 p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <p className="font-medium text-black/[0.82]">{agent.name}</p>
-            <Badge className={healthTone(agent.health_state)}>{healthLabel(agent.health_state)}</Badge>
-          </div>
-          <p className="mt-2 text-xs uppercase tracking-[0.16em] text-black/[0.46]">{agent.key}</p>
-        </div>
-        <div className="rounded-[18px] bg-sand/65 px-4 py-3 text-right text-sm text-black/[0.68]">
-          <div>{agent.workload_score}/100 workload</div>
-          <div className="mt-1">
-            {agent.last_active_at ? formatRelativeTime(agent.last_active_at) : "No recent activity"}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4">
-        <div className="flex items-center justify-between gap-3 text-xs uppercase tracking-[0.16em] text-black/[0.45]">
-          <span>Confidence</span>
-          <span>{(agent.average_confidence * 100).toFixed(0)}%</span>
-        </div>
-        <div className="mt-2 h-2 overflow-hidden rounded-full bg-black/[0.06]">
-          <div
-            className={cn(
-              "h-full rounded-full",
-              agent.average_confidence >= 0.8
-                ? "bg-emerald-500"
-                : agent.average_confidence >= 0.6
-                  ? "bg-amber-500"
-                  : "bg-red-500"
-            )}
-            style={{ width: confidenceWidth(agent.average_confidence) }}
-          />
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-[18px] border border-black/10 bg-sand/50 p-4 text-sm text-black/[0.72]">
-          <p className="text-xs uppercase tracking-[0.14em] text-black/[0.44]">Steps</p>
-          <p className="mt-2 font-medium">{agent.step_count}</p>
-          <p className="mt-1 text-xs text-black/[0.56]">{agent.recent_step_count} in last 24h</p>
-        </div>
-        <div className="rounded-[18px] border border-black/10 bg-sand/50 p-4 text-sm text-black/[0.72]">
-          <p className="text-xs uppercase tracking-[0.14em] text-black/[0.44]">Escalations</p>
-          <p className="mt-2 font-medium">{agent.escalation_count}</p>
-          <p className="mt-1 text-xs text-black/[0.56]">{agent.tool_call_count} tool calls</p>
-        </div>
-        <div className="rounded-[18px] border border-black/10 bg-sand/50 p-4 text-sm text-black/[0.72]">
-          <p className="text-xs uppercase tracking-[0.14em] text-black/[0.44]">Coverage</p>
-          <p className="mt-2 font-medium">{agent.active_thread_count} tasks</p>
-          <p className="mt-1 text-xs text-black/[0.56]">{agent.active_project_count} projects</p>
-        </div>
-        <div className="rounded-[18px] border border-black/10 bg-sand/50 p-4 text-sm text-black/[0.72]">
-          <p className="text-xs uppercase tracking-[0.14em] text-black/[0.44]">Model ladder</p>
-          <p className="mt-2 font-medium">{agent.fast_model}</p>
-          <p className="mt-1 text-xs text-black/[0.56]">{agent.slow_model}</p>
-        </div>
-      </div>
-
-      <div className="mt-4 flex flex-wrap gap-2 text-xs uppercase tracking-[0.14em] text-black/[0.46]">
-        {agent.specialties.map((specialty) => (
-          <span key={`${agent.key}-${specialty}`} className="rounded-full border border-black/10 px-3 py-1">
-            {specialty}
-          </span>
-        ))}
-      </div>
-
-      <div className="mt-4 grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-        <div className="rounded-[22px] border border-black/10 bg-white/72 p-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-black/[0.8]">
-            <Radar className="h-4 w-4" />
-            Monitoring signals
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {statusEntries.length > 0 ? (
-              statusEntries.map(([status, count]) => (
-                <span
-                  key={`${agent.key}-${status}`}
-                  className={cn(
-                    "rounded-full px-3 py-2 text-xs uppercase tracking-[0.14em]",
-                    activityTone(status)
-                  )}
-                >
-                  {status.replaceAll("_", " ")} {count}
-                </span>
-              ))
-            ) : (
-              <span className="text-sm text-black/[0.52]">No persisted status data yet.</span>
-            )}
-          </div>
-          <div className="mt-4 space-y-2 text-sm text-black/[0.68]">
-            <p>
-              Last model: <span className="font-medium text-black/[0.82]">{agent.last_model ?? "n/a"}</span>
-            </p>
-            <p>
-              Provider: <span className="font-medium text-black/[0.82]">{agent.last_provider ?? "n/a"}</span>
-            </p>
-            <p>
-              Last persisted status:{" "}
-              <span className="font-medium text-black/[0.82]">{agent.last_status ?? "ready"}</span>
-            </p>
-          </div>
-          <div className="mt-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-black/[0.44]">Recent tools</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {agent.recent_tools.length > 0 ? (
-                agent.recent_tools.map((tool) => (
-                  <span
-                    key={`${agent.key}-${tool}`}
-                    className="rounded-full border border-black/10 bg-sand/45 px-3 py-2 text-xs text-black/[0.68]"
-                  >
-                    {tool}
-                  </span>
-                ))
-              ) : (
-                <span className="text-sm text-black/[0.52]">No recent tool usage persisted for this agent yet.</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-[22px] border border-black/10 bg-white/72 p-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-black/[0.8]">
-            <Activity className="h-4 w-4" />
-            Recent step details
-          </div>
-          <div className="mt-4 space-y-3">
-            {agent.recent_steps.length > 0 ? (
-              agent.recent_steps.map((step) => (
-                <div key={step.run_step_id} className="rounded-[18px] border border-black/10 bg-sand/45 p-3">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium text-black/[0.8]">{step.thread_title}</p>
-                      <p className="mt-1 text-xs uppercase tracking-[0.14em] text-black/[0.45]">
-                        {formatRelativeTime(step.created_at)}
-                      </p>
-                    </div>
-                    <span className={cn("rounded-full px-2 py-1 text-[10px] uppercase tracking-[0.12em]", activityTone(step.status))}>
-                      {step.status.replaceAll("_", " ")}
-                    </span>
-                  </div>
-                  <p className="mt-3 text-sm leading-6 text-black/[0.68]">{stepLabel(step)}</p>
-                  <div className="mt-3 flex flex-wrap gap-2 text-xs uppercase tracking-[0.14em] text-black/[0.46]">
-                    <span>{(step.confidence * 100).toFixed(0)}% confidence</span>
-                    {step.model && <span>{step.model}</span>}
-                    {step.tools.map((tool) => (
-                      <span key={`${step.run_step_id}-${tool}`} className="rounded-full bg-black/[0.04] px-2 py-1">
-                        {tool}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-black/[0.52]">No recent persisted steps yet for this agent.</p>
-            )}
-          </div>
-        </div>
-      </div>
-    </article>
+    agent.recent_summaries[0] ??
+    agent.recent_steps[0]?.summary ??
+    `Specialized in ${agent.specialties.join(", ").toLowerCase()}.`
   );
 }
 
 export function AgentsHub({ data }: { data: ChatAgentsData }) {
   const [snapshot, setSnapshot] = useState(data);
   const [refreshing, setRefreshing] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const refreshAgents = useCallback(async () => {
@@ -278,286 +95,231 @@ export function AgentsHub({ data }: { data: ChatAgentsData }) {
   }, [snapshot.workspace_id]);
 
   useEffect(() => {
-    if (!autoRefresh) {
-      return;
-    }
     const timer = window.setInterval(() => {
       void refreshAgents();
     }, 30000);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, refreshAgents, snapshot.workspace_id]);
+  }, [refreshAgents]);
 
-  const mostLoadedAgent = useMemo(
-    () => snapshot.agents.reduce<AgentSurface | null>((current, agent) => {
-      if (!current || agent.workload_score > current.workload_score) {
-        return agent;
-      }
-      return current;
-    }, null),
+  const busiestAgent = useMemo(
+    () =>
+      snapshot.agents.reduce<AgentSurface | null>((current, agent) => {
+        if (!current || agent.workload_score > current.workload_score) {
+          return agent;
+        }
+        return current;
+      }, null),
     [snapshot.agents]
   );
 
   return (
     <section className="space-y-6">
-      <div className="panel p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="panel overflow-hidden p-6 lg:p-8">
+        <div className="grid gap-8 xl:grid-cols-[0.95fr_1.05fr] xl:items-center">
           <div>
-            <Badge>Agents</Badge>
-            <h1 className="mt-4 font-display text-5xl">Swarm monitoring for every specialist operator.</h1>
-            <p className="mt-4 max-w-3xl text-base text-black/62">
-              This view is now a monitoring surface, not just a catalog. It shows which agents are live,
-              which ones are carrying current workload, where escalations are happening, and what each
-              specialist has actually been doing across the workspace.
+            <Badge>Agent</Badge>
+            <h1 className="mt-5 max-w-3xl font-display text-[clamp(2.3rem,4vw,4.4rem)] leading-[0.95] tracking-[-0.05em]">
+              Deploy a persistent agent for work that has to keep moving.
+            </h1>
+            <p className="mt-5 max-w-2xl text-base leading-8 text-black/[0.62]">
+              Keep a specialist stack ready for research, coding, delivery, and follow-up. This surface is lighter and more product-like, but it still stays grounded in the real agent fleet already running in the workspace.
             </p>
-          </div>
-          <div className="flex flex-col items-end gap-3">
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => void refreshAgents()}
-                disabled={refreshing}
-                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-4 py-2 text-sm text-black/72 transition hover:bg-white disabled:opacity-60"
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Link
+                href={withWorkspacePath("/app/chat", snapshot.workspace_id)}
+                className="rounded-full bg-black px-5 py-2.5 text-sm text-white transition hover:bg-black/90"
               >
-                {refreshing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                {refreshing ? "Refreshing..." : "Refresh monitor"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setAutoRefresh((current) => !current)}
-                className={cn(
-                  "rounded-full px-4 py-2 text-sm transition",
-                  autoRefresh
-                    ? "bg-ink text-white"
-                    : "border border-black/10 bg-white/80 text-black/72 hover:bg-white"
-                )}
+                Get started
+              </Link>
+              <Link
+                href={withWorkspacePath("/app/automations", snapshot.workspace_id)}
+                className="rounded-full border border-black/10 bg-white px-5 py-2.5 text-sm text-black/[0.72] transition hover:bg-black/[0.03]"
               >
-                {autoRefresh ? "Auto refresh on" : "Auto refresh off"}
-              </button>
+                Open automation
+              </Link>
             </div>
-            <div className="flex flex-wrap gap-2 text-xs uppercase tracking-[0.14em] text-black/[0.48]">
-              <span className="rounded-full bg-black/[0.04] px-3 py-2">
-                Supervisor {snapshot.supervisor_model}
-              </span>
-              <span className="rounded-full bg-black/[0.04] px-3 py-2">
-                {snapshot.overview.activity_window_hours}h activity window
-              </span>
-              {mostLoadedAgent && (
-                <span className="rounded-full bg-black/[0.04] px-3 py-2">
-                  Highest load {mostLoadedAgent.name}
-                </span>
-              )}
+          </div>
+
+          <div className="relative rounded-[32px] border border-black/10 bg-white/88 p-6 shadow-[0_30px_80px_rgba(17,19,24,0.08)]">
+            <div className="mx-auto flex h-[250px] max-w-[260px] items-center justify-center rounded-[34px] border-4 border-black/10 bg-gradient-to-b from-white to-sand/70 shadow-[0_30px_60px_rgba(17,19,24,0.08)]">
+              <div className="rounded-[22px] border border-black/10 bg-white px-5 py-4 shadow-[0_20px_40px_rgba(17,19,24,0.08)]">
+                <div className="flex items-center gap-3">
+                  <div className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-black text-white">
+                    <Sparkles className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-black/[0.82]">Swarm Agent</p>
+                    <p className="text-xs uppercase tracking-[0.16em] text-black/[0.42]">
+                      {snapshot.overview.active_agents_24h} active specialists
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="pointer-events-none absolute left-8 top-6 flex flex-wrap gap-3">
+              {heroConnectors.map((connector) => {
+                const Icon = connector.icon;
+                return (
+                  <div
+                    key={connector.label}
+                    className={cn(
+                      "inline-flex h-14 w-14 items-center justify-center rounded-full shadow-[0_18px_38px_rgba(17,19,24,0.12)]",
+                      connector.tone
+                    )}
+                  >
+                    <Icon className="h-5 w-5" />
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
-        <div className="mt-5 flex flex-wrap gap-3">
-          <Link
-            href={withWorkspacePath("/app/chat", snapshot.workspace_id)}
-            className="rounded-full bg-ink px-4 py-2 text-sm text-white transition hover:bg-ink/90"
-          >
-            Open Task Workspace
-          </Link>
-          <Link
-            href={withWorkspacePath("/app/monitor", snapshot.workspace_id)}
-            className="rounded-full border border-black/10 bg-white/80 px-4 py-2 text-sm text-black/72 transition hover:bg-white"
-          >
-            Open Ops Monitor
-          </Link>
+
+        <div className="mt-8 grid gap-4 xl:grid-cols-4">
+          {heroFeatures.map((feature) => (
+            <article key={feature.title} className="rounded-[24px] border border-black/10 bg-white/80 p-5">
+              <p className="text-sm font-medium text-black/[0.82]">{feature.title}</p>
+              <p className="mt-3 text-sm leading-7 text-black/[0.62]">{feature.description}</p>
+            </article>
+          ))}
         </div>
-        {refreshError && <p className="mt-4 text-sm text-red-700">{refreshError}</p>}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5 xl:col-span-1">
-          <p className="text-xs uppercase tracking-[0.18em] text-black/45">Agents</p>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5">
+          <p className="text-xs uppercase tracking-[0.18em] text-black/[0.45]">Agent fleet</p>
           <p className="mt-3 font-display text-4xl">{snapshot.overview.total_agents}</p>
-          <p className="mt-2 text-sm text-black/60">Specialist operators available to the supervisor.</p>
+          <p className="mt-2 text-sm text-black/[0.6]">Operators available to the supervisor.</p>
         </div>
-        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5 xl:col-span-1">
-          <p className="text-xs uppercase tracking-[0.18em] text-black/45">Active</p>
+        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5">
+          <p className="text-xs uppercase tracking-[0.18em] text-black/[0.45]">Active today</p>
           <p className="mt-3 font-display text-4xl">{snapshot.overview.active_agents_24h}</p>
-          <p className="mt-2 text-sm text-black/60">Agents with activity in the current monitoring window.</p>
+          <p className="mt-2 text-sm text-black/[0.6]">Specialists with recent live work.</p>
         </div>
-        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5 xl:col-span-1">
-          <p className="text-xs uppercase tracking-[0.18em] text-black/45">Busy</p>
-          <p className="mt-3 font-display text-4xl">{snapshot.overview.busy_agents}</p>
-          <p className="mt-2 text-sm text-black/60">Agents carrying the heaviest current workload.</p>
-        </div>
-        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5 xl:col-span-1">
-          <p className="text-xs uppercase tracking-[0.18em] text-black/45">Steps</p>
-          <p className="mt-3 font-display text-4xl">{snapshot.overview.total_steps}</p>
-          <p className="mt-2 text-sm text-black/60">Persisted recent execution steps across the workspace.</p>
-        </div>
-        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5 xl:col-span-1">
-          <p className="text-xs uppercase tracking-[0.18em] text-black/45">Tools</p>
+        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5">
+          <p className="text-xs uppercase tracking-[0.18em] text-black/[0.45]">Tool calls</p>
           <p className="mt-3 font-display text-4xl">{snapshot.overview.total_tool_calls}</p>
-          <p className="mt-2 text-sm text-black/60">Recent tool calls observed across specialist agents.</p>
+          <p className="mt-2 text-sm text-black/[0.6]">Observable actions across the fleet.</p>
         </div>
-        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5 xl:col-span-1">
-          <p className="text-xs uppercase tracking-[0.18em] text-black/45">Escalations</p>
-          <p className="mt-3 font-display text-4xl">{snapshot.overview.escalation_count}</p>
-          <p className="mt-2 text-sm text-black/60">
-            Avg confidence {(snapshot.overview.average_confidence * 100).toFixed(0)}%
+        <div className="rounded-[24px] border border-black/10 bg-white/75 p-5">
+          <p className="text-xs uppercase tracking-[0.18em] text-black/[0.45]">Confidence</p>
+          <p className="mt-3 font-display text-4xl">{(snapshot.overview.average_confidence * 100).toFixed(0)}%</p>
+          <p className="mt-2 text-sm text-black/[0.6]">
+            {busiestAgent ? `Busiest agent: ${busiestAgent.name}` : "No load signal yet."}
           </p>
         </div>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <div className="space-y-6">
-          <div className="panel p-6">
-            <div className="flex items-center gap-2">
-              <BrainCircuit className="h-5 w-5" />
-              <h2 className="font-display text-3xl">Health board</h2>
+      <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+        <div className="panel p-6">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Badge>Specialists</Badge>
+              <h2 className="mt-4 font-display text-4xl">Current operator roster</h2>
             </div>
-            <p className="mt-3 max-w-3xl text-sm leading-7 text-black/[0.62]">
-              Each card combines persisted execution history into monitoring signals: health state,
-              workload pressure, tool usage, escalations, and the last concrete steps the agent completed.
-            </p>
-            <div className="mt-5 space-y-4">
-              {snapshot.agents.map((agent) => (
-                <AgentHealthCard key={agent.key} agent={agent} />
-              ))}
-            </div>
+            <button
+              type="button"
+              onClick={() => void refreshAgents()}
+              disabled={refreshing}
+              className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-black/[0.68] transition hover:bg-black/[0.03] disabled:opacity-60"
+            >
+              {refreshing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Refresh
+            </button>
+          </div>
+          {refreshError ? <p className="mt-4 text-sm text-red-700">{refreshError}</p> : null}
+          <div className="mt-6 grid gap-4 md:grid-cols-2">
+            {snapshot.agents.map((agent) => (
+              <article key={agent.key} className="rounded-[24px] border border-black/10 bg-white/80 p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-base font-medium text-black/[0.82]">{agent.name}</p>
+                    <p className="mt-1 text-xs uppercase tracking-[0.16em] text-black/[0.44]">
+                      {agent.fast_model}
+                    </p>
+                  </div>
+                  <span className={cn("rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.16em]", healthTone(agent.health_state))}>
+                    {agent.health_state}
+                  </span>
+                </div>
+                <p className="mt-4 text-sm leading-7 text-black/[0.62]">{compactSummary(agent)}</p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {agent.specialties.slice(0, 3).map((specialty) => (
+                    <span key={`${agent.key}-${specialty}`} className="rounded-full border border-black/10 px-3 py-1.5 text-xs text-black/[0.56]">
+                      {specialty}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-4 flex items-center justify-between gap-3 text-xs uppercase tracking-[0.16em] text-black/[0.42]">
+                  <span>{agent.tool_call_count} tools</span>
+                  <span>{agent.active_thread_count} tasks</span>
+                  <span>{(agent.average_confidence * 100).toFixed(0)}% confidence</span>
+                </div>
+              </article>
+            ))}
           </div>
         </div>
 
         <div className="space-y-6">
           <div className="panel p-6">
-            <div className="flex items-center gap-2">
-              <Activity className="h-5 w-5" />
-              <h2 className="font-display text-3xl">Recent workspace activity</h2>
-            </div>
-            <div className="mt-5 space-y-3">
-              {snapshot.recent_activity.length > 0 ? (
-                snapshot.recent_activity.map((entry) => (
-                  <div key={entry.run_step_id} className="rounded-[22px] border border-black/10 bg-white/78 p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium text-black/[0.82]">{entry.agent_name}</p>
-                          <span className={cn("rounded-full px-2 py-1 text-[10px] uppercase tracking-[0.12em]", activityTone(entry.status))}>
-                            {entry.status.replaceAll("_", " ")}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-sm text-black/[0.66]">{entry.thread_title}</p>
-                      </div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-black/[0.46]">
-                        {formatRelativeTime(entry.created_at)}
-                      </p>
-                    </div>
-                    <p className="mt-3 text-sm leading-7 text-black/[0.7]">{stepLabel(entry)}</p>
-                    <div className="mt-3 flex flex-wrap gap-2 text-xs uppercase tracking-[0.14em] text-black/[0.46]">
-                      <span>{(entry.confidence * 100).toFixed(0)}% confidence</span>
-                      {entry.model && <span>{entry.model}</span>}
-                      {entry.tools.map((tool) => (
-                        <span key={`${entry.run_step_id}-${tool}`} className="rounded-full bg-black/[0.04] px-2 py-1">
-                          {tool}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="rounded-[22px] border border-dashed border-black/10 bg-white/70 px-4 py-8 text-center text-sm text-black/[0.58]">
-                  Recent agent activity will populate here as soon as the workspace starts executing runs.
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="panel p-6">
-            <div className="flex items-center gap-2">
-              <Wrench className="h-5 w-5" />
-              <h2 className="font-display text-3xl">Capability matrix</h2>
-            </div>
-            <div className="mt-5 space-y-4">
-              {snapshot.agents.map((agent) => (
-                <div key={`${agent.key}-matrix`} className="rounded-[22px] border border-black/10 bg-white/78 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
+            <Badge>Live focus</Badge>
+            <h2 className="mt-4 font-display text-4xl">What the supervisor is seeing</h2>
+            <div className="mt-6 space-y-3">
+              {snapshot.recent_activity.slice(0, 4).map((entry) => (
+                <div key={entry.run_step_id} className="rounded-[22px] border border-black/10 bg-white/78 p-4">
+                  <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="font-medium text-black/[0.82]">{agent.name}</p>
-                      <p className="mt-1 text-xs uppercase tracking-[0.14em] text-black/[0.45]">
-                        {agent.fast_model}
-                        {" -> "}
-                        {agent.slow_model}
+                      <p className="text-sm font-medium text-black/[0.82]">{entry.thread_title}</p>
+                      <p className="mt-1 text-xs uppercase tracking-[0.16em] text-black/[0.42]">
+                        {entry.agent_name ?? "Agent"} · {formatRelativeTime(entry.created_at)}
                       </p>
                     </div>
-                    <Badge className={healthTone(agent.health_state)}>{healthLabel(agent.health_state)}</Badge>
+                    <span className="rounded-full bg-black/[0.06] px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.52]">
+                      {entry.status.replaceAll("_", " ")}
+                    </span>
                   </div>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {agent.tools.map((tool) => (
-                      <span
-                        key={`${agent.key}-${tool.name}`}
-                        className="rounded-full border border-black/10 bg-sand/45 px-3 py-2 text-xs text-black/[0.68]"
-                      >
-                        {tool.name}
-                      </span>
-                    ))}
-                  </div>
+                  <p className="mt-3 text-sm leading-7 text-black/[0.62]">
+                    {entry.summary || entry.validation_summary || "No summary recorded yet."}
+                  </p>
                 </div>
               ))}
             </div>
           </div>
 
           <div className="panel p-6">
-            <div className="flex items-center gap-2">
-              <Sparkles className="h-5 w-5" />
-              <h2 className="font-display text-3xl">Supervisor signals</h2>
+            <Badge>Better than a static catalog</Badge>
+            <div className="mt-4 space-y-4 text-sm leading-8 text-black/[0.62]">
+              <p>
+                This surface opens like a product landing page, but it still stays connected to the real monitoring data underneath.
+              </p>
+              <p>
+                You can move from here into chat, automations, or the deeper ops monitor without losing the sense of what each specialist is doing.
+              </p>
             </div>
-            <div className="mt-5 grid gap-4 md:grid-cols-2">
-              <div className="rounded-[22px] border border-black/10 bg-white/78 p-4">
-                <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                  Stable fleet
-                </div>
-                <p className="mt-3 text-sm leading-7 text-black/[0.68]">
-                  {snapshot.overview.active_agents_24h} of {snapshot.overview.total_agents} agents have recent workspace activity.
-                </p>
-              </div>
-              <div className="rounded-[22px] border border-black/10 bg-white/78 p-4">
-                <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
-                  <TriangleAlert className="h-4 w-4 text-amber-600" />
-                  Escalation pressure
-                </div>
-                <p className="mt-3 text-sm leading-7 text-black/[0.68]">
-                  {snapshot.overview.escalation_count} escalations were recorded inside the monitored activity window.
-                </p>
-              </div>
-              <div className="rounded-[22px] border border-black/10 bg-white/78 p-4">
-                <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
-                  <Clock3 className="h-4 w-4 text-blue-600" />
-                  Last activity
-                </div>
-                <p className="mt-3 text-sm leading-7 text-black/[0.68]">
-                  {snapshot.overview.last_activity_at
-                    ? `The most recent persisted agent step was ${formatRelativeTime(snapshot.overview.last_activity_at)}.`
-                    : "No persisted agent activity has been recorded for this workspace yet."}
-                </p>
-              </div>
-              <div className="rounded-[22px] border border-black/10 bg-white/78 p-4">
-                <div className="flex items-center gap-2 text-sm font-medium text-black/[0.82]">
-                  <Zap className="h-4 w-4 text-fuchsia-600" />
-                  Load concentration
-                </div>
-                <p className="mt-3 text-sm leading-7 text-black/[0.68]">
-                  {mostLoadedAgent
-                    ? `${mostLoadedAgent.name} currently carries the strongest monitoring load signal at ${mostLoadedAgent.workload_score}/100.`
-                    : "No agent has accumulated workload signals yet."}
-                </p>
-              </div>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Link
+                href={withWorkspacePath("/app/chat", snapshot.workspace_id)}
+                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-black/[0.72] transition hover:bg-black/[0.03]"
+              >
+                <Bot className="h-4 w-4" />
+                Open task workspace
+              </Link>
+              <Link
+                href={withWorkspacePath("/app/monitor", snapshot.workspace_id)}
+                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-black/[0.72] transition hover:bg-black/[0.03]"
+              >
+                <BrainCircuit className="h-4 w-4" />
+                Open deeper monitor
+              </Link>
+              <Link
+                href={withWorkspacePath("/app/plugins", snapshot.workspace_id)}
+                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-black/[0.72] transition hover:bg-black/[0.03]"
+              >
+                <Workflow className="h-4 w-4" />
+                Manage plugins
+              </Link>
             </div>
-          </div>
-
-          <div className="panel p-6">
-            <div className="flex items-center gap-2">
-              <ShieldAlert className="h-5 w-5" />
-              <h2 className="font-display text-3xl">Why this view is stronger</h2>
-            </div>
-            <p className="mt-4 text-sm leading-8 text-black/[0.66]">
-              The old surface mostly reflected static catalog state and a couple of persisted counters.
-              This version turns the same backend into a monitoring console: real agent health, workload,
-              escalation pressure, tool usage, recent step detail, and live refresh behavior that operators
-              can actually use while work is happening.
-            </p>
           </div>
         </div>
       </div>

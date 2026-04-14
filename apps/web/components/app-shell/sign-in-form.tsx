@@ -11,7 +11,7 @@ export function SignInForm({ mode }: { mode: Mode }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const demoEmail = process.env.NEXT_PUBLIC_DEMO_USER_EMAIL ?? "demo@swarm.local";
+  const demoEmail = process.env.NEXT_PUBLIC_DEMO_USER_EMAIL ?? "demo@swarm.dev";
   const demoPassword = process.env.NEXT_PUBLIC_DEMO_USER_PASSWORD ?? "DemoPass123!";
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {

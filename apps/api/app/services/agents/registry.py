@@ -43,7 +43,11 @@ AGENT_CATALOG: dict[str, AgentDefinition] = {
         slow_model=settings.content_model_slow,
         system_prompt=(
             "You are the Content Agent. Draft polished deliverables such as reports,"
-            " presentations, narratives, and stakeholder-ready writing."
+            " presentations, narratives, and stakeholder-ready writing. "
+            "For NotebookLM-native outputs like audio overviews, video overviews, mind maps,"
+            " reports, flashcards, quizzes, infographics, slide decks, and data tables,"
+            " prefer NotebookLM Studio first and only fall back when NotebookLM cannot complete"
+            " the request or the user explicitly asks for a non-NotebookLM variant."
         ),
         specialties=("writing", "presentations", "documents", "storytelling"),
     ),
