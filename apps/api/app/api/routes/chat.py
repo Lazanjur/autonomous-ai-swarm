@@ -13,9 +13,17 @@ from app.db.session import get_session
 from app.models.entities import ChatThread
 from app.schemas.chat import (
     ChatAgentsResponse,
+    ChatWorkbenchBranchCreateRequest,
+    ChatWorkbenchBranchCreateResponse,
+    ChatWorkbenchCommitRequest,
+    ChatWorkbenchCommitResponse,
     ChatSearchResponse,
     ChatWorkbenchDiffResponse,
     ChatProjectCreateRequest,
+    ChatWorkbenchPullRequestRequest,
+    ChatWorkbenchPullRequestResponse,
+    ChatWorkbenchRollbackRequest,
+    ChatWorkbenchRollbackResponse,
     ChatRunRequest,
     ChatRunResponse,
     ChatTaskTemplatesResponse,
@@ -199,7 +207,12 @@ async def get_agents_surface(
     return ChatAgentsResponse(
         workspace_id=payload["workspace"].id,
         supervisor_model=payload["supervisor_model"],
+        planner_model=payload["planner_model"],
+        supervisor_model_details=payload["supervisor_model_details"],
+        planner_model_details=payload["planner_model_details"],
         overview=payload["overview"],
+        providers=payload["providers"],
+        model_catalog=payload["model_catalog"],
         agents=payload["agents"],
         recent_activity=payload["recent_activity"],
     )
@@ -267,6 +280,7 @@ async def get_workbench_file(
         size_bytes=payload["size_bytes"],
         truncated=payload["truncated"],
         content=payload["content"],
+        related_files=payload["related_files"],
     )
 
 
@@ -328,6 +342,149 @@ async def get_workbench_repo(
         staged_count=payload["staged_count"],
         unstaged_count=payload["unstaged_count"],
         untracked_count=payload["untracked_count"],
+    )
+
+
+@router.post("/workbench/repo/branch", response_model=ChatWorkbenchBranchCreateResponse)
+async def create_workbench_branch(
+    payload: ChatWorkbenchBranchCreateRequest,
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> ChatWorkbenchBranchCreateResponse:
+    await auth_service.assert_workspace_access(
+        session,
+        user_id=context.user.id,
+        workspace_id=payload.workspace_id,
+        min_role="member",
+    )
+    try:
+        result = await service.create_workbench_branch(
+            session,
+            workspace_id=payload.workspace_id,
+            branch_name=payload.branch_name,
+            from_ref=payload.from_ref,
+            actor_id=context.user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ChatWorkbenchBranchCreateResponse(
+        workspace_id=result["workspace"].id,
+        branch_name=result["branch_name"],
+        head=result["head"],
+        repo=ChatWorkbenchRepoResponse.model_validate(
+            {
+                "workspace_id": result["workspace"].id,
+                **result["repo"],
+            }
+        ),
+    )
+
+
+@router.post("/workbench/repo/commit", response_model=ChatWorkbenchCommitResponse)
+async def commit_workbench_changes(
+    payload: ChatWorkbenchCommitRequest,
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> ChatWorkbenchCommitResponse:
+    await auth_service.assert_workspace_access(
+        session,
+        user_id=context.user.id,
+        workspace_id=payload.workspace_id,
+        min_role="member",
+    )
+    try:
+        result = await service.commit_workbench_changes(
+            session,
+            workspace_id=payload.workspace_id,
+            message=payload.message,
+            paths=payload.paths,
+            actor_id=context.user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ChatWorkbenchCommitResponse(
+        workspace_id=result["workspace"].id,
+        committed=result["committed"],
+        message=result["message"],
+        commit=result["commit"],
+        note=result["note"],
+        repo=ChatWorkbenchRepoResponse.model_validate(
+            {
+                "workspace_id": result["workspace"].id,
+                **result["repo"],
+            }
+        ),
+    )
+
+
+@router.post("/workbench/repo/pr", response_model=ChatWorkbenchPullRequestResponse)
+async def create_workbench_pull_request(
+    payload: ChatWorkbenchPullRequestRequest,
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> ChatWorkbenchPullRequestResponse:
+    await auth_service.assert_workspace_access(
+        session,
+        user_id=context.user.id,
+        workspace_id=payload.workspace_id,
+        min_role="member",
+    )
+    try:
+        result = await service.create_workbench_pull_request(
+            session,
+            workspace_id=payload.workspace_id,
+            title=payload.title,
+            body=payload.body,
+            base=payload.base,
+            head=payload.head,
+            draft=payload.draft,
+            actor_id=context.user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ChatWorkbenchPullRequestResponse(
+        workspace_id=result["workspace"].id,
+        created=result["created"],
+        title=result["title"],
+        head=result["head"],
+        base=result["base"],
+        url=result["url"],
+        note=result["note"],
+    )
+
+
+@router.post("/workbench/repo/rollback", response_model=ChatWorkbenchRollbackResponse)
+async def rollback_workbench_changes(
+    payload: ChatWorkbenchRollbackRequest,
+    context: AuthContext = Depends(require_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> ChatWorkbenchRollbackResponse:
+    await auth_service.assert_workspace_access(
+        session,
+        user_id=context.user.id,
+        workspace_id=payload.workspace_id,
+        min_role="member",
+    )
+    try:
+        result = await service.rollback_workbench_changes(
+            session,
+            workspace_id=payload.workspace_id,
+            paths=payload.paths,
+            actor_id=context.user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ChatWorkbenchRollbackResponse(
+        workspace_id=result["workspace"].id,
+        restored=result["restored"],
+        restored_paths=result["restored_paths"],
+        note=result["note"],
+        repo=ChatWorkbenchRepoResponse.model_validate(
+            {
+                "workspace_id": result["workspace"].id,
+                **result["repo"],
+            }
+        ),
     )
 
 

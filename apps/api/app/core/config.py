@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     browser_capture_html: bool = True
     browser_capture_text_chars: int = 4000
     browser_capture_max_links: int = 8
+    sandbox_default_target_os: str = "linux"
+    sandbox_default_resource_tier: str = "small"
+    sandbox_gpu_enabled: bool = False
+    sandbox_windows_shell_image: str = "mcr.microsoft.com/powershell:7.4-ubuntu-22.04"
+    sandbox_macos_shell_image: str = "ubuntu:22.04"
 
     email_from_name: str = "Autonomous AI Swarm"
     smtp_host: str | None = None
@@ -130,8 +135,20 @@ class Settings(BaseSettings):
         default="https://ws-pq02hrwmtnk68klo.eu-central-1.maas.aliyuncs.com/api/v1",
         alias="ALIBABA_DASHSCOPE_URL",
     )
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    anthropic_base_url: str = Field(default="https://api.anthropic.com/v1", alias="ANTHROPIC_BASE_URL")
+    anthropic_version: str = Field(default="2023-06-01", alias="ANTHROPIC_VERSION")
+    gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    gemini_base_url: str = Field(
+        default="https://generativelanguage.googleapis.com/v1beta",
+        alias="GEMINI_BASE_URL",
+    )
 
     supervisor_model: str = "qwen3.5-flash"
+    planner_model_fast: str = "qwen3.5-flash"
+    planner_model_slow: str = "qwen3.6-plus"
     research_model_fast: str = "qwen3.5-flash"
     research_model_slow: str = "qwen3.6-plus"
     analysis_model_fast: str = "qwen3.5-flash"
@@ -142,6 +159,8 @@ class Settings(BaseSettings):
     coding_model_slow: str = "qwen3-coder-plus"
     vision_model_fast: str = "qwen3-vl-flash"
     vision_model_slow: str = "qwen3-vl-plus"
+    ui_diagram_model_fast: str = "qwen3-vl-flash"
+    ui_diagram_model_slow: str = "qwen3-vl-plus"
 
     default_organization_name: str = "Demo Organization"
     default_workspace_name: str = "Strategy Lab"
@@ -194,6 +213,38 @@ class Settings(BaseSettings):
     def alibaba_api_key_configured(self) -> bool:
         candidate = (self.alibaba_api_key or "").strip()
         return bool(candidate and candidate != "replace-with-real-key")
+
+    @property
+    def openai_api_key_configured(self) -> bool:
+        candidate = (self.openai_api_key or "").strip()
+        return bool(candidate and candidate != "replace-with-real-key")
+
+    @property
+    def anthropic_api_key_configured(self) -> bool:
+        candidate = (self.anthropic_api_key or "").strip()
+        return bool(candidate and candidate != "replace-with-real-key")
+
+    @property
+    def gemini_api_key_configured(self) -> bool:
+        candidate = (self.gemini_api_key or "").strip()
+        return bool(candidate and candidate != "replace-with-real-key")
+
+    @property
+    def configured_llm_providers(self) -> list[str]:
+        providers: list[str] = []
+        if self.alibaba_api_key_configured:
+            providers.append("alibaba")
+        if self.openai_api_key_configured:
+            providers.append("openai")
+        if self.anthropic_api_key_configured:
+            providers.append("anthropic")
+        if self.gemini_api_key_configured:
+            providers.append("gemini")
+        return providers
+
+    @property
+    def llm_models_configured(self) -> bool:
+        return bool(self.configured_llm_providers)
 
 
 @lru_cache

@@ -92,14 +92,25 @@ async def test_get_agents_surface_builds_catalog_and_activity():
 
     assert payload["workspace"] == workspace
     assert payload["supervisor_model"]
+    assert payload["planner_model"]
+    assert payload["supervisor_model_details"]["name"] == payload["supervisor_model"]
+    assert payload["planner_model_details"]["name"] == payload["planner_model"]
+    assert payload["overview"]["configured_provider_count"] >= 0
     assert payload["overview"]["total_agents"] >= 1
     assert payload["overview"]["total_tool_calls"] == 3
     assert payload["overview"]["escalation_count"] == 1
+    assert payload["providers"]
+    assert payload["model_catalog"]
     assert payload["recent_activity"]
+    assert any(agent["key"] == "planner" for agent in payload["agents"])
+    assert any(agent["key"] == "ui_diagram" for agent in payload["agents"])
+    assert any(agent["key"] == "tester" for agent in payload["agents"])
     assert any(
         agent["key"] == "coding"
         and agent["step_count"] == 1
         and agent["tool_call_count"] == 2
+        and agent["fast_model_details"]["name"] == agent["fast_model"]
+        and agent["slow_model_details"]["name"] == agent["slow_model"]
         and agent["recent_steps"]
         for agent in payload["agents"]
     )

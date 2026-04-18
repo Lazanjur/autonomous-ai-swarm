@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.models.entities import utc_now
+from app.services.governance import redact_data
 from app.services.storage import StorageService
 
 
@@ -22,7 +23,7 @@ class ToolRuntimeBase:
             "operation": operation,
             "run_id": run_id,
             "started_at": started_at.isoformat(),
-            "request": request,
+            "request": redact_data(request),
             "status": "running",
         }
         return audit, perf_counter()
@@ -41,11 +42,11 @@ class ToolRuntimeBase:
         audit["status"] = status
         audit["finished_at"] = finished_at.isoformat()
         audit["duration_ms"] = round((perf_counter() - started_at) * 1000, 2)
-        audit["artifacts"] = artifacts or []
+        audit["artifacts"] = redact_data(artifacts or [])
         if response is not None:
-            audit["response"] = response
+            audit["response"] = redact_data(response)
         if error:
-            audit["error"] = error
+            audit["error"] = redact_data(error)
         audit_key = f"tool-audit/{self.name}/{audit['run_id']}.json"
         audit["storage_key"] = audit_key
         audit["path"] = self.storage.save_json(audit_key, audit)

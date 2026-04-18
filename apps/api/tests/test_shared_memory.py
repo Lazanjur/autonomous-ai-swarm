@@ -151,6 +151,66 @@ async def test_create_run_passes_memory_context_to_orchestrator(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_run_uses_persistent_task_brief_in_effective_prompt(monkeypatch):
+    service = RunService()
+    workspace_id = uuid4()
+    thread_id = uuid4()
+    run_id = uuid4()
+    payload = ChatRunRequest(
+        workspace_id=workspace_id,
+        thread_id=thread_id,
+        message="Continue with the next step.",
+    )
+    thread = SimpleNamespace(
+        id=thread_id,
+        workspace_id=workspace_id,
+        project_id=None,
+        metadata={
+            "shared_memory": {"summary": "Task memory", "run_count": 2},
+            "task_brief": "Ship the production rollout with minimal downtime and explicit rollback safety.",
+        },
+    )
+    run = SimpleNamespace(id=run_id, workspace_id=workspace_id)
+    captured: dict[str, object] = {}
+
+    async def fake_resolve_thread(_session, _payload, *, actor_id=None):
+        return thread
+
+    async def fake_load_thread_project(_session, _thread):
+        return None
+
+    async def fake_start_run(_session, *, payload, thread):
+        return run
+
+    async def fake_finalize_run(_session, *, payload, result, thread, project, run, actor_id=None):
+        return thread, run, []
+
+    async def fake_execute(prompt, *, metadata=None, memory_context=None, event_handler=None):
+        captured["prompt"] = prompt
+        return {
+            "plan": [],
+            "execution_batches": [],
+            "steps": [],
+            "final_response": "done",
+            "summary": "done",
+            "citations": [],
+            "scratchpad": {},
+        }
+
+    monkeypatch.setattr(service, "_resolve_thread", fake_resolve_thread)
+    monkeypatch.setattr(service, "_load_thread_project", fake_load_thread_project)
+    monkeypatch.setattr(service, "_start_run", fake_start_run)
+    monkeypatch.setattr(service, "_finalize_run", fake_finalize_run)
+    monkeypatch.setattr(service.orchestrator, "execute", fake_execute)
+
+    await service.create_run(SimpleNamespace(), payload, actor_id=uuid4())
+
+    assert "Persistent task brief for this thread" in str(captured["prompt"])
+    assert "Ship the production rollout with minimal downtime" in str(captured["prompt"])
+    assert "Latest user instruction:\nContinue with the next step." in str(captured["prompt"])
+
+
+@pytest.mark.asyncio
 async def test_get_chat_workspace_exposes_task_and_project_memory(monkeypatch):
     service = RunService()
     workspace_id = uuid4()

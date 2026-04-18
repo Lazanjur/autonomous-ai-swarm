@@ -148,7 +148,8 @@ async def ops_dashboard(
         scope=scope,
         health={
             "status": "ok" if database_ok else "degraded",
-            "models_configured": settings.alibaba_api_key_configured,
+            "models_configured": settings.llm_models_configured,
+            "configured_providers": settings.configured_llm_providers,
             "database_ok": database_ok,
             "rate_limiting_enabled": settings.rate_limit_enabled,
             "provider_budget_enforced": settings.provider_budget_enforced,

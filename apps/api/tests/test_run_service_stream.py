@@ -192,3 +192,71 @@ async def test_stream_run_emits_live_batch_and_step_events(monkeypatch):
         "done",
     ]
     assert events[-2]["data"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_stream_run_browser_fast_path_emits_live_events(monkeypatch):
+    service = RunService()
+    workspace_id = uuid4()
+    payload = ChatRunRequest(
+        workspace_id=workspace_id,
+        message="Open www.investbusiness.com, and then login with credentials: email: firma@investbusiness.org and pw: 123456",
+    )
+    thread = SimpleNamespace(id=uuid4(), workspace_id=workspace_id, title="Browser task", project_id=None)
+    run = SimpleNamespace(
+        id=uuid4(),
+        thread_id=thread.id,
+        workspace_id=workspace_id,
+        status="running",
+        created_at=datetime.now(timezone.utc),
+        user_message=payload.message,
+    )
+
+    async def fake_resolve_thread(session, request, actor_id=None):
+        return thread
+
+    async def fake_load_thread_project(session, resolved_thread):
+        return None
+
+    async def fake_start_run(session, *, payload, thread):
+        return run
+
+    async def fake_finalize(session, *, payload, result, thread, project, run, actor_id=None):
+        return thread, SimpleNamespace(id=run.id, status="completed"), []
+
+    async def fake_execute_named(agent_key, tool_name, args, event_handler=None, event_context=None):
+        return {
+            "tool": tool_name,
+            "status": "completed",
+            "target_url": "https://www.investbusiness.com",
+            "final_url": "https://www.investbusiness.com/dashboard",
+            "page_title": "Invest Business",
+            "extracted_text": "Dashboard loaded successfully.",
+            "artifacts": [],
+        }
+
+    monkeypatch.setattr(service, "_resolve_thread", fake_resolve_thread)
+    monkeypatch.setattr(service, "_load_thread_project", fake_load_thread_project)
+    monkeypatch.setattr(service, "_start_run", fake_start_run)
+    monkeypatch.setattr(service, "_finalize_run", fake_finalize)
+    monkeypatch.setattr(service.tools_registry, "execute_named", fake_execute_named)
+
+    events = []
+    async for event in service.stream_run(session=None, payload=payload):
+        events.append(event)
+
+    event_names = [event["event"] for event in events]
+    assert event_names == [
+        "thread",
+        "run.created",
+        "plan",
+        "batches",
+        "batch.started",
+        "step.started",
+        "step.completed",
+        "final",
+        "run.persisted",
+        "done",
+    ]
+    assert events[-2]["data"]["status"] == "completed"
+    assert all(event["event"] != "error" for event in events)

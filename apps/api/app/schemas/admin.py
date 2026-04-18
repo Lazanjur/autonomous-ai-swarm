@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class OpsHealthRead(BaseModel):
     status: str
     models_configured: bool
+    configured_providers: list[str] = Field(default_factory=list)
     database_ok: bool
     rate_limiting_enabled: bool
     provider_budget_enforced: bool

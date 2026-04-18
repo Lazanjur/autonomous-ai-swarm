@@ -16,6 +16,7 @@ import {
   LogOut,
   MessageSquarePlus,
   PlugZap,
+  RotateCcw,
   Search,
   Sparkles,
   Workflow,
@@ -82,6 +83,18 @@ function taskRailHref(
     project: projectId,
     thread: threadId,
     new: newTask ? "1" : null
+  });
+}
+
+function taskReplayHref(
+  workspaceId?: string | null,
+  projectId?: string | null,
+  threadId?: string | null
+) {
+  return withWorkspacePath("/app/chat", workspaceId, {
+    project: projectId,
+    thread: threadId,
+    replay: threadId ? "1" : null
   });
 }
 
@@ -407,6 +420,8 @@ export function AppSidebar({
   const firstVisibleThreadId = allThreads[0]?.id ?? null;
   const newTaskHref = taskRailHref(activeWorkspaceId, selectedProjectId, null, true);
   const allTasksHref = taskRailHref(activeWorkspaceId, null, currentThreadId ?? firstVisibleThreadId);
+  const cappedProjectsList = projects.length > 4;
+  const cappedAllTasksList = allThreads.length > 4;
 
   const navItems = useMemo(
     () => [
@@ -599,21 +614,42 @@ export function AppSidebar({
       pathname === "/app/chat" &&
       (currentThreadId ? currentThreadId === thread.id : firstVisibleThreadId === thread.id);
     const project = thread.project_id ? projects.find((entry) => entry.id === thread.project_id) : null;
+    const replayHref = taskReplayHref(activeWorkspaceId, thread.project_id ?? null, thread.id);
 
     return (
-      <Link
+      <div
         key={thread.id}
-        href={taskRailHref(activeWorkspaceId, thread.project_id ?? null, thread.id)}
-        className={cn("sidebar-thread-row", active && "sidebar-thread-row-active")}
+        className={cn(
+          "group flex items-center gap-2 rounded-2xl px-3 py-2 transition",
+          active ? "bg-black/[0.06]" : "hover:bg-black/[0.03]"
+        )}
       >
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{thread.title}</p>
-          <p className="mt-0.5 truncate text-xs text-black/[0.42]">
-            {project ? `${project.name} · ` : ""}
-            {formatRelativeTime(thread.last_activity_at ?? thread.updated_at)}
-          </p>
-        </div>
-      </Link>
+        <Link
+          href={taskRailHref(activeWorkspaceId, thread.project_id ?? null, thread.id)}
+          className="min-w-0 flex-1"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium">{thread.title}</p>
+            <p className="mt-0.5 truncate text-xs text-black/[0.42]">
+              {project ? `${project.name} · ` : ""}
+              {formatRelativeTime(thread.last_activity_at ?? thread.updated_at)}
+            </p>
+          </div>
+        </Link>
+        {thread.last_message_preview ? (
+          <Link
+            href={replayHref}
+            className={cn(
+              "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.54] opacity-0 transition hover:bg-black/[0.03] group-hover:opacity-100 focus:opacity-100",
+              active && "opacity-100"
+            )}
+            aria-label={`Replay ${thread.title}`}
+            title={`Replay ${thread.title}`}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+          </Link>
+        ) : null}
+      </div>
     );
   }
 
@@ -964,7 +1000,13 @@ export function AppSidebar({
                 <span>New project</span>
               </button>
             </div>
-            <div className="space-y-1.5">
+            <div
+              className={cn(
+                "space-y-1.5",
+                cappedProjectsList &&
+                  "sidebar-scroll-column max-h-[16rem] overflow-y-auto pr-1"
+              )}
+            >
               {projects.length > 0 ? (
                 projects.map((project) => renderProjectRow(project))
               ) : (
@@ -980,7 +1022,13 @@ export function AppSidebar({
                 Open
               </Link>
             </div>
-            <div className="space-y-1.5">
+            <div
+              className={cn(
+                "space-y-1.5",
+                cappedAllTasksList &&
+                  "sidebar-scroll-column max-h-[16rem] overflow-y-auto pr-1"
+              )}
+            >
               {allThreads.length > 0 ? (
                 allThreads.map((thread) => renderThreadRow(thread))
               ) : (

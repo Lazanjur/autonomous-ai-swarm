@@ -19,7 +19,9 @@ import type {
   KnowledgeDocument,
   KnowledgeHealth,
   LibraryDashboard,
+  ModelCapability,
   OpsDashboard,
+  ProviderCapability,
   SearchResult,
   TaskTemplateCatalogData
 } from "@/lib/types";
@@ -50,6 +52,78 @@ export function getE2ESessionToken() {
 function resolveWorkspaceId(workspaceId?: string | null) {
   return workspaceId === SECONDARY_WORKSPACE_ID ? SECONDARY_WORKSPACE_ID : DEFAULT_WORKSPACE_ID;
 }
+
+function makeProviderCapability(
+  key: string,
+  label: string,
+  family: string,
+  configured: boolean
+): ProviderCapability {
+  return {
+    key,
+    label,
+    family,
+    configured,
+    supports_chat: true,
+    supports_embeddings: key !== "anthropic",
+    supports_vision: key !== "mock-local",
+    detail: `${label} provider`
+  };
+}
+
+function makeModelCapability(
+  name: string,
+  overrides: Partial<ModelCapability> = {}
+): ModelCapability {
+  return {
+    name,
+    provider_key: "alibaba",
+    provider_label: "Alibaba / Qwen",
+    family: "qwen",
+    configured: true,
+    context_window_tokens: 262144,
+    latency_tier: name.includes("flash") ? "fast" : "balanced",
+    supports_chat: true,
+    supports_embeddings: false,
+    supports_vision: name.includes("vl"),
+    supports_reasoning: true,
+    supports_structured_output: true,
+    supports_planning: !name.includes("coder"),
+    supports_research: !name.includes("coder"),
+    supports_coding: name.includes("coder"),
+    supports_ui_diagrams: name.includes("vl") || !name.includes("coder"),
+    specialties: name.includes("coder") ? ["coding"] : ["general"],
+    notes: [],
+    ...overrides
+  };
+}
+
+const defaultProviders: ProviderCapability[] = [
+  makeProviderCapability("alibaba", "Alibaba / Qwen", "qwen", true),
+  makeProviderCapability("openai", "OpenAI", "gpt", false),
+  makeProviderCapability("anthropic", "Anthropic", "claude", false),
+  makeProviderCapability("gemini", "Google Gemini", "gemini", false),
+  makeProviderCapability("mock-local", "Local Fallback", "fallback", true)
+];
+
+const defaultModelCatalog: ModelCapability[] = [
+  makeModelCapability("qwen3.5-flash", { specialties: ["general", "planning", "research"] }),
+  makeModelCapability("qwen3-max", {
+    latency_tier: "deliberate",
+    specialties: ["analysis", "synthesis"]
+  }),
+  makeModelCapability("qwen3-coder-flash", { specialties: ["coding", "debugging"] }),
+  makeModelCapability("qwen3-coder-plus", { specialties: ["coding", "architecture"] }),
+  makeModelCapability("qwen3-vl-flash", {
+    supports_vision: true,
+    specialties: ["vision", "browser", "ui"]
+  }),
+  makeModelCapability("qwen3-vl-plus", {
+    latency_tier: "balanced",
+    supports_vision: true,
+    specialties: ["vision", "browser", "ui"]
+  })
+];
 
 const mockSession: AuthProfile = {
   user: {
@@ -543,15 +617,16 @@ const workbenchTreesByWorkspace: Record<string, Record<string, ChatWorkbenchTree
 
 const workbenchFilesByWorkspace: Record<string, Record<string, ChatWorkbenchFileData>> = {
   [DEFAULT_WORKSPACE_ID]: {
-    "README.md": {
-      workspace_id: DEFAULT_WORKSPACE_ID,
-      root_label: "Launch Workspace",
-      relative_path: "README.md",
-      name: "README.md",
-      extension: ".md",
-      size_bytes: 1200,
-      truncated: false,
-      content: [
+      "README.md": {
+        workspace_id: DEFAULT_WORKSPACE_ID,
+        root_label: "Launch Workspace",
+        relative_path: "README.md",
+        name: "README.md",
+        extension: ".md",
+        size_bytes: 1200,
+        truncated: false,
+        related_files: [],
+        content: [
         "# Autonomous AI Swarm",
         "",
         "## Launch Workspace",
@@ -561,15 +636,16 @@ const workbenchFilesByWorkspace: Record<string, Record<string, ChatWorkbenchFile
         "- Final publish remains gated behind the last verification pass."
       ].join("\n")
     },
-    "todo.md": {
-      workspace_id: DEFAULT_WORKSPACE_ID,
-      root_label: "Launch Workspace",
-      relative_path: "todo.md",
-      name: "todo.md",
-      extension: ".md",
-      size_bytes: 980,
-      truncated: false,
-      content: [
+      "todo.md": {
+        workspace_id: DEFAULT_WORKSPACE_ID,
+        root_label: "Launch Workspace",
+        relative_path: "todo.md",
+        name: "todo.md",
+        extension: ".md",
+        size_bytes: 980,
+        truncated: false,
+        related_files: [],
+        content: [
         "# Launch Checklist",
         "",
         "- [x] Tighten the workspace shell",
@@ -577,15 +653,16 @@ const workbenchFilesByWorkspace: Record<string, Record<string, ChatWorkbenchFile
         "- [ ] Run the final production verification pass"
       ].join("\n")
     },
-    "package.json": {
-      workspace_id: DEFAULT_WORKSPACE_ID,
-      root_label: "Launch Workspace",
-      relative_path: "package.json",
-      name: "package.json",
-      extension: ".json",
-      size_bytes: 320,
-      truncated: false,
-      content: JSON.stringify(
+      "package.json": {
+        workspace_id: DEFAULT_WORKSPACE_ID,
+        root_label: "Launch Workspace",
+        relative_path: "package.json",
+        name: "package.json",
+        extension: ".json",
+        size_bytes: 320,
+        truncated: false,
+        related_files: [],
+        content: JSON.stringify(
         {
           name: "launch-workspace",
           private: true,
@@ -598,15 +675,16 @@ const workbenchFilesByWorkspace: Record<string, Record<string, ChatWorkbenchFile
         2
       )
     },
-    "apps/web/package.json": {
-      workspace_id: DEFAULT_WORKSPACE_ID,
-      root_label: "Launch Workspace",
-      relative_path: "apps/web/package.json",
-      name: "package.json",
-      extension: ".json",
-      size_bytes: 480,
-      truncated: false,
-      content: JSON.stringify(
+      "apps/web/package.json": {
+        workspace_id: DEFAULT_WORKSPACE_ID,
+        root_label: "Launch Workspace",
+        relative_path: "apps/web/package.json",
+        name: "package.json",
+        extension: ".json",
+        size_bytes: 480,
+        truncated: false,
+        related_files: [],
+        content: JSON.stringify(
         {
           name: "web",
           scripts: {
@@ -620,16 +698,17 @@ const workbenchFilesByWorkspace: Record<string, Record<string, ChatWorkbenchFile
     }
   },
   [SECONDARY_WORKSPACE_ID]: {
-    "README.md": {
-      workspace_id: SECONDARY_WORKSPACE_ID,
-      root_label: "Operations Sandbox",
-      relative_path: "README.md",
-      name: "README.md",
-      extension: ".md",
-      size_bytes: 640,
-      truncated: false,
-      content: "# Operations Sandbox\n\nThis workspace is used for workflow and resilience drills."
-    }
+      "README.md": {
+        workspace_id: SECONDARY_WORKSPACE_ID,
+        root_label: "Operations Sandbox",
+        relative_path: "README.md",
+        name: "README.md",
+        extension: ".md",
+        size_bytes: 640,
+        truncated: false,
+        related_files: [],
+        content: "# Operations Sandbox\n\nThis workspace is used for workflow and resilience drills."
+      }
   }
 };
 
@@ -976,11 +1055,20 @@ const agentsByWorkspace: Record<string, ChatAgentsData> = {
   [DEFAULT_WORKSPACE_ID]: {
     workspace_id: DEFAULT_WORKSPACE_ID,
     supervisor_model: "qwen3.5-flash",
+    planner_model: "qwen3-max",
+    supervisor_model_details: makeModelCapability("qwen3.5-flash", {
+      specialties: ["general", "planning", "research"]
+    }),
+    planner_model_details: makeModelCapability("qwen3-max", {
+      latency_tier: "deliberate",
+      specialties: ["analysis", "synthesis"]
+    }),
     overview: {
-      total_agents: 5,
+      total_agents: 7,
+      configured_provider_count: 1,
       active_agents_24h: 4,
       busy_agents: 2,
-      idle_agents: 1,
+      idle_agents: 3,
       total_steps: 12,
       total_tool_calls: 9,
       escalation_count: 1,
@@ -988,12 +1076,20 @@ const agentsByWorkspace: Record<string, ChatAgentsData> = {
       activity_window_hours: 24,
       last_activity_at: iso("2026-04-13T09:03:00Z")
     },
+    providers: defaultProviders,
+    model_catalog: defaultModelCatalog,
     agents: [
       {
         key: "coding",
         name: "Coding Agent",
         fast_model: "qwen3-coder-flash",
         slow_model: "qwen3-coder-plus",
+        fast_model_details: makeModelCapability("qwen3-coder-flash", {
+          specialties: ["coding", "debugging"]
+        }),
+        slow_model_details: makeModelCapability("qwen3-coder-plus", {
+          specialties: ["coding", "architecture"]
+        }),
         specialties: ["implementation", "refactor", "verification"],
         tools: [
           { name: "workspace_files", description: "Browse and update code files" },
@@ -1059,11 +1155,20 @@ const agentsByWorkspace: Record<string, ChatAgentsData> = {
   [SECONDARY_WORKSPACE_ID]: {
     workspace_id: SECONDARY_WORKSPACE_ID,
     supervisor_model: "qwen3.5-flash",
+    planner_model: "qwen3-max",
+    supervisor_model_details: makeModelCapability("qwen3.5-flash", {
+      specialties: ["general", "planning", "research"]
+    }),
+    planner_model_details: makeModelCapability("qwen3-max", {
+      latency_tier: "deliberate",
+      specialties: ["analysis", "synthesis"]
+    }),
     overview: {
-      total_agents: 5,
+      total_agents: 7,
+      configured_provider_count: 1,
       active_agents_24h: 1,
       busy_agents: 1,
-      idle_agents: 4,
+      idle_agents: 6,
       total_steps: 1,
       total_tool_calls: 1,
       escalation_count: 0,
@@ -1071,6 +1176,8 @@ const agentsByWorkspace: Record<string, ChatAgentsData> = {
       activity_window_hours: 24,
       last_activity_at: iso("2026-04-12T08:30:00Z")
     },
+    providers: defaultProviders,
+    model_catalog: defaultModelCatalog,
     agents: [],
     recent_activity: []
   }
@@ -1085,6 +1192,7 @@ const opsDashboardByWorkspace: Record<string, OpsDashboard> = {
     health: {
       status: "healthy",
       models_configured: true,
+      configured_providers: ["alibaba"],
       database_ok: true,
       rate_limiting_enabled: true,
       provider_budget_enforced: true
@@ -1190,6 +1298,7 @@ const opsDashboardByWorkspace: Record<string, OpsDashboard> = {
     health: {
       status: "healthy",
       models_configured: true,
+      configured_providers: ["alibaba"],
       database_ok: true,
       rate_limiting_enabled: true,
       provider_budget_enforced: true

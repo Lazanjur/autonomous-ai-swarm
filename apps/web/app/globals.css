@@ -210,6 +210,28 @@ body.workbench-focus-mode .shell-main {
   color: white;
 }
 
+.sidebar-scroll-column {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(17, 19, 24, 0.18) transparent;
+}
+
+.sidebar-scroll-column::-webkit-scrollbar {
+  width: 0.45rem;
+}
+
+.sidebar-scroll-column::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scroll-column::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(17, 19, 24, 0.16);
+}
+
+.sidebar-scroll-column::-webkit-scrollbar-thumb:hover {
+  background: rgba(17, 19, 24, 0.24);
+}
+
 .sidebar-modal-backdrop {
   background: rgba(17, 19, 24, 0.22);
   backdrop-filter: blur(8px);

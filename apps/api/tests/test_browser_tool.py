@@ -29,19 +29,67 @@ class FakeLocator:
     def __init__(self, page, selector: str) -> None:
         self.page = page
         self.selector = selector
+        self.index = 0
         self.first = self
 
     async def click(self, timeout: int) -> None:
         self.page.interactions.append(("click", self.selector, timeout))
+        if "submit" in self.selector.lower() or "log in" in self.selector.lower() or "sign in" in self.selector.lower():
+            self.page.trigger_submit()
 
     async def fill(self, value: str, timeout: int) -> None:
         self.page.interactions.append(("fill", self.selector, value, timeout))
+
+    async def blur(self) -> None:
+        self.page.interactions.append(("blur", self.selector))
+
+    async def press(self, key: str, timeout: int) -> None:
+        self.page.interactions.append(("press", self.selector, key, timeout))
+        if key == "Enter":
+            self.page.trigger_submit()
+
+    async def evaluate(self, script: str):
+        self.page.interactions.append(("evaluate", self.selector))
+        if "requestSubmit" in script or "form.submit" in script:
+            self.page.trigger_submit()
+        return True
+
+    async def count(self) -> int:
+        return len(self.page.locator_states.get(self.selector, []))
+
+    def nth(self, index: int):
+        locator = FakeLocator(self.page, self.selector)
+        locator.index = index
+        return locator
+
+    async def is_visible(self) -> bool:
+        state = self.page.locator_states.get(self.selector, [])
+        return state[self.index].get("visible", True)
+
+    async def is_enabled(self) -> bool:
+        state = self.page.locator_states.get(self.selector, [])
+        return state[self.index].get("enabled", True)
 
 
 class FakePage:
     def __init__(self) -> None:
         self.url = "https://example.com/landing"
         self.interactions: list[tuple] = []
+        self.locator_states: dict[str, list[dict[str, bool]]] = {}
+        self.snapshot = {
+            "page_title": "Example Domain",
+            "text": "Example page body",
+            "headings": ["Example Domain"],
+            "links": [{"text": "More information", "url": "https://example.com/more"}],
+            "link_count": 1,
+            "button_count": 0,
+            "form_count": 0,
+            "captured_text_chars": 17,
+            "visible_password_field_count": 0,
+            "visible_identifier_field_count": 0,
+            "login_surface_detected": False,
+        }
+        self.on_submit = None
 
     async def goto(self, url: str, wait_until: str, timeout: int):
         self.url = url
@@ -52,16 +100,7 @@ class FakePage:
         self.interactions.append(("wait_for_load_state", state, timeout))
 
     async def evaluate(self, script: str, payload: dict):
-        return {
-            "page_title": "Example Domain",
-            "text": "Example page body",
-            "headings": ["Example Domain"],
-            "links": [{"text": "More information", "url": "https://example.com/more"}],
-            "link_count": 1,
-            "button_count": 0,
-            "form_count": 0,
-            "captured_text_chars": 17,
-        }
+        return dict(self.snapshot)
 
     async def screenshot(self, full_page: bool, type: str) -> bytes:
         assert full_page is True
@@ -76,6 +115,10 @@ class FakePage:
 
     async def wait_for_selector(self, selector: str, timeout: int) -> None:
         self.interactions.append(("wait_for_selector", selector, timeout))
+
+    def trigger_submit(self) -> None:
+        if callable(self.on_submit):
+            self.on_submit()
 
 
 class FakeContext:
@@ -162,6 +205,10 @@ async def test_execute_runs_playwright_capture_and_persists_artifacts(monkeypatc
 async def test_execute_runs_approved_actions_in_prompt_order(monkeypatch):
     storage = FakeStorage()
     page = FakePage()
+    page.locator_states = {
+        "input[name='email']": [{"visible": True, "enabled": True}],
+        "button[type='submit']": [{"visible": True, "enabled": True}],
+    }
     tool = BrowserAutomationTool(storage=storage)
     monkeypatch.setattr(tool, "_playwright_factory", lambda: FakePlaywrightManager(page))
 
@@ -200,6 +247,141 @@ async def test_execute_skips_actions_without_approval(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_runs_autonomous_login_when_credentials_are_supplied(monkeypatch):
+    storage = FakeStorage()
+    page = FakePage()
+    page.locator_states = {
+        "input[type='email']": [{"visible": True, "enabled": True}],
+        "input[type='password']": [{"visible": True, "enabled": True}],
+        "button[type='submit']": [{"visible": True, "enabled": True}],
+    }
+
+    def complete_login() -> None:
+        page.url = "https://example.com/dashboard"
+        page.snapshot = {
+            **page.snapshot,
+            "page_title": "Example Dashboard",
+            "text": "Welcome back. Sign out.",
+            "headings": ["Dashboard"],
+            "visible_password_field_count": 0,
+            "visible_identifier_field_count": 0,
+            "login_surface_detected": False,
+        }
+
+    page.on_submit = complete_login
+    tool = BrowserAutomationTool(storage=storage)
+    monkeypatch.setattr(tool, "_playwright_factory", lambda: FakePlaywrightManager(page))
+
+    result = await tool.execute(
+        (
+            "Open https://example.com, then login with credentials: "
+            "email: demo@example.com and pw: hunter2"
+        )
+    )
+
+    assert result["status"] == "completed"
+    assert result["action_mode"] == "interactive"
+    assert [item["kind"] for item in result["executed_actions"]] == ["fill", "fill", "click"]
+    assert any(
+        item[:3] == ("fill", "input[type='email']", "demo@example.com")
+        for item in page.interactions
+    )
+    assert any(
+        item[:3] == ("fill", "input[type='password']", "hunter2")
+        for item in page.interactions
+    )
+    assert result["skipped_actions"] == []
+    assert result["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_execute_login_falls_back_to_enter_submission(monkeypatch):
+    storage = FakeStorage()
+    page = FakePage()
+    page.locator_states = {
+        "input[type='email']": [{"visible": True, "enabled": True}],
+        "input[type='password']": [{"visible": True, "enabled": True}],
+    }
+    tool = BrowserAutomationTool(storage=storage)
+    monkeypatch.setattr(tool, "_playwright_factory", lambda: FakePlaywrightManager(page))
+
+    result = await tool.execute(
+        (
+            "Open https://example.com, then login with credentials: "
+            "email: demo@example.com and pw: hunter2"
+        )
+    )
+
+    assert result["status"] == "completed"
+    assert [item["kind"] for item in result["executed_actions"]] == ["fill", "fill", "press"]
+    assert ("press", "input[type='password']", "Enter", 6000) in page.interactions
+
+
+@pytest.mark.asyncio
+async def test_execute_prefers_visible_login_fields_and_direct_login_surface(monkeypatch):
+    storage = FakeStorage()
+    page = FakePage()
+    page.locator_states = {"button[type='submit']": [{"visible": True, "enabled": True}]}
+
+    original_goto = page.goto
+
+    async def goto_with_login_surface(url: str, wait_until: str, timeout: int):
+        response = await original_goto(url, wait_until, timeout)
+        if url.endswith("/login"):
+            page.locator_states.update(
+                {
+                    "input[type='email']": [
+                        {"visible": False, "enabled": True},
+                        {"visible": True, "enabled": True},
+                    ],
+                    "form input[type='email']": [{"visible": True, "enabled": True}],
+                    "input[type='password']": [{"visible": True, "enabled": True}],
+                    "form input[type='password']": [{"visible": True, "enabled": True}],
+                }
+            )
+            page.snapshot = {
+                **page.snapshot,
+                "page_title": "Example Login",
+                "text": "Sign in to your account",
+                "headings": ["Sign in"],
+                "visible_password_field_count": 1,
+                "visible_identifier_field_count": 1,
+                "login_surface_detected": True,
+            }
+        return response
+
+    page.goto = goto_with_login_surface
+
+    def complete_login() -> None:
+        page.url = "https://example.com/dashboard"
+        page.snapshot = {
+            **page.snapshot,
+            "page_title": "Example Dashboard",
+            "text": "Welcome back. Sign out.",
+            "headings": ["Dashboard"],
+            "visible_password_field_count": 0,
+            "visible_identifier_field_count": 0,
+            "login_surface_detected": False,
+        }
+
+    page.on_submit = complete_login
+    tool = BrowserAutomationTool(storage=storage)
+    monkeypatch.setattr(tool, "_playwright_factory", lambda: FakePlaywrightManager(page))
+
+    result = await tool.execute(
+        "Open https://example.com and then login with credentials: email: demo@example.com and pw: hunter2"
+    )
+
+    assert result["status"] == "completed"
+    assert any(
+        item[:2] == ("goto", "https://example.com/login")
+        for item in page.interactions
+    )
+    assert ("fill", "input[type='email']", "demo@example.com", 6000) in page.interactions
+    assert ("blur", "input[type='email']") in page.interactions
+
+
+@pytest.mark.asyncio
 async def test_execute_emits_browser_session_events(monkeypatch):
     storage = FakeStorage()
     page = FakePage()
@@ -227,3 +409,79 @@ async def test_execute_emits_browser_session_events(monkeypatch):
     assert events[2][1]["session_kind"] == "browser"
     assert events[2][1]["artifacts"]["screenshot"]["storage_key"].endswith("page.png")
     assert events[-1][1]["session_kind"] == "browser"
+
+
+@pytest.mark.asyncio
+async def test_execute_marks_login_as_failed_when_site_rejects_credentials(monkeypatch):
+    storage = FakeStorage()
+    page = FakePage()
+    page.locator_states = {
+        "input[type='email']": [{"visible": True, "enabled": True}],
+        "input[type='password']": [{"visible": True, "enabled": True}],
+        "button[type='submit']": [{"visible": True, "enabled": True}],
+    }
+
+    def reject_login() -> None:
+        page.url = "https://example.com/login"
+        page.snapshot = {
+            **page.snapshot,
+            "page_title": "Example Login",
+            "text": "Sign in to your account. Bad creds. Try again.",
+            "headings": ["Sign in to your account"],
+            "form_count": 1,
+            "button_count": 1,
+            "captured_text_chars": 48,
+            "visible_password_field_count": 1,
+            "visible_identifier_field_count": 1,
+            "login_surface_detected": True,
+        }
+
+    page.on_submit = reject_login
+    tool = BrowserAutomationTool(storage=storage)
+    monkeypatch.setattr(tool, "_playwright_factory", lambda: FakePlaywrightManager(page))
+
+    result = await tool.execute(
+        "Open https://example.com and then login with credentials: email: demo@example.com and pw: hunter2"
+    )
+
+    assert result["status"] == "failed"
+    assert "rejected the supplied credentials" in result["reason"]
+    assert result["login_assessment"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_execute_marks_stalled_login_as_takeover_required(monkeypatch):
+    storage = FakeStorage()
+    page = FakePage()
+    page.locator_states = {
+        "input[type='email']": [{"visible": True, "enabled": True}],
+        "input[type='password']": [{"visible": True, "enabled": True}],
+        "button[type='submit']": [{"visible": True, "enabled": True}],
+    }
+
+    def stall_login() -> None:
+        page.url = "https://example.com/login"
+        page.snapshot = {
+            **page.snapshot,
+            "page_title": "Example Login",
+            "text": "Sign in to your account. Signing in… Please wait.",
+            "headings": ["Sign in to your account"],
+            "form_count": 1,
+            "button_count": 1,
+            "captured_text_chars": 50,
+            "visible_password_field_count": 1,
+            "visible_identifier_field_count": 1,
+            "login_surface_detected": True,
+        }
+
+    page.on_submit = stall_login
+    tool = BrowserAutomationTool(storage=storage)
+    monkeypatch.setattr(tool, "_playwright_factory", lambda: FakePlaywrightManager(page))
+
+    result = await tool.execute(
+        "Open https://example.com and then login with credentials: email: demo@example.com and pw: hunter2"
+    )
+
+    assert result["status"] == "takeover_required"
+    assert result["manual_takeover"]["required"] is True
+    assert "take over the browser" in result["manual_takeover"]["reason"]

@@ -322,6 +322,164 @@ _TASK_TEMPLATES: list[dict[str, Any]] = [
             ],
         },
     },
+    {
+        "key": "autonomous_app_builder",
+        "name": "Autonomous app builder",
+        "category": "computer",
+        "summary": "Coordinate research, coding, testing, and delivery to ship a full-stack product slice end to end.",
+        "description": (
+            "A premium builder workflow for turning a product brief into a working frontend, backend, and data model "
+            "with an explicit tester pass before delivery."
+        ),
+        "tags": ["computer", "builder", "product", "swarm"],
+        "capabilities": [
+            "Plan the product slice and technical architecture",
+            "Implement frontend, backend, and database changes",
+            "Run verification before packaging the delivery",
+        ],
+        "recommended_operator_tab": "computer",
+        "requires_approval": False,
+        "chat_defaults": {
+            "thread_title": "Autonomous app builder",
+            "prompt": (
+                "Build the requested product slice end to end. Plan the architecture, implement the frontend, "
+                "backend, and database changes, run a tester pass to catch regressions, and finish with a clear "
+                "delivery summary plus the best next product iteration."
+            ),
+            "model_profile": "qwen3-max",
+            "use_retrieval": True,
+            "suggested_steps": [
+                "Plan the product slice and architecture",
+                "Implement the necessary frontend, backend, and data-model changes",
+                "Run a tester pass and summarize what shipped next",
+            ],
+        },
+        "automation_defaults": {
+            "name": "Autonomous app builder",
+            "description": "Build and verify a full-stack product slice with a coding-plus-tester swarm.",
+            "prompt": (
+                "Build the configured product slice end to end, including architecture planning, implementation, "
+                "verification, and a concise delivery summary with next steps."
+            ),
+            "schedule_hint": "weekly:tue@09:00",
+            "timezone": "UTC",
+            "use_retrieval": True,
+            "requires_approval": False,
+            "retry_limit": 2,
+            "timeout_seconds": 2400,
+            "notify_on": ["failed", "completed"],
+            "steps": [
+                "Plan the architecture and work breakdown",
+                "Implement the product slice",
+                "Verify the build and summarize delivery",
+            ],
+        },
+    },
+    {
+        "key": "live_debugging_assistant",
+        "name": "Live debugging assistant",
+        "category": "computer",
+        "summary": "Monitor logs, reproduce failures, fix the issue, and verify the repair in one coordinated run.",
+        "description": (
+            "A premium debugging workflow for incidents, broken deploys, failing tests, or runtime regressions "
+            "where coding and verification should stay tightly coupled."
+        ),
+        "tags": ["computer", "debug", "incident", "qa"],
+        "capabilities": [
+            "Inspect logs and runtime evidence",
+            "Apply the smallest correct fix",
+            "Verify the repair with a tester pass",
+        ],
+        "recommended_operator_tab": "terminal",
+        "requires_approval": False,
+        "chat_defaults": {
+            "thread_title": "Live debugging assistant",
+            "prompt": (
+                "Act as a live debugging assistant. Inspect the relevant logs and failing checks, reproduce the issue, "
+                "apply the smallest correct fix, run a tester pass, and finish with a short incident summary."
+            ),
+            "model_profile": "qwen3-coder-plus",
+            "use_retrieval": False,
+            "suggested_steps": [
+                "Inspect the failing logs and symptoms",
+                "Fix the issue in code or configuration",
+                "Verify the repair and summarize impact",
+            ],
+        },
+        "automation_defaults": {
+            "name": "Live debugging assistant",
+            "description": "Monitor a target debugging workflow, fix the issue, and report the verified result.",
+            "prompt": (
+                "Inspect the configured failing workflow, reproduce the problem, apply the fix, run verification, "
+                "and return a concise incident summary with what changed."
+            ),
+            "schedule_hint": "daily@06:30",
+            "timezone": "UTC",
+            "use_retrieval": False,
+            "requires_approval": False,
+            "retry_limit": 2,
+            "timeout_seconds": 2100,
+            "notify_on": ["failed", "completed"],
+            "steps": [
+                "Inspect the runtime evidence",
+                "Apply the fix",
+                "Run verification and summarize the outcome",
+            ],
+        },
+    },
+    {
+        "key": "team_delivery_swarm",
+        "name": "Team delivery swarm",
+        "category": "computer",
+        "summary": "Run a shared multi-agent task with explicit handoffs, task memory, and collaborator-friendly outputs.",
+        "description": (
+            "A premium shared-work mode for teams that want coder, tester, and researcher behavior to stay visible "
+            "inside one task with durable shared context."
+        ),
+        "tags": ["computer", "team", "swarm", "handoff"],
+        "capabilities": [
+            "Coordinate researcher, coder, and tester roles",
+            "Preserve shared task memory and handoffs",
+            "Produce a collaborator-ready delivery update",
+        ],
+        "recommended_operator_tab": "computer",
+        "requires_approval": False,
+        "chat_defaults": {
+            "thread_title": "Team delivery swarm",
+            "prompt": (
+                "Coordinate this as a team delivery swarm. Use the right mix of research, coding, and tester work, "
+                "preserve the important shared context, and finish with a collaborator-friendly status update plus "
+                "the next best handoff options."
+            ),
+            "model_profile": "qwen3-max",
+            "use_retrieval": True,
+            "suggested_steps": [
+                "Coordinate the right specialist roles",
+                "Preserve the shared task context and handoffs",
+                "Deliver a collaborator-friendly summary",
+            ],
+        },
+        "automation_defaults": {
+            "name": "Team delivery swarm",
+            "description": "Run a shared multi-agent delivery workflow and summarize the latest handoff-ready state.",
+            "prompt": (
+                "Coordinate the configured task as a shared delivery swarm, preserve shared context, and return a "
+                "clear collaborator-ready summary with next handoff options."
+            ),
+            "schedule_hint": "weekly:wed@10:00",
+            "timezone": "UTC",
+            "use_retrieval": True,
+            "requires_approval": False,
+            "retry_limit": 2,
+            "timeout_seconds": 1800,
+            "notify_on": ["failed", "completed"],
+            "steps": [
+                "Coordinate specialist roles",
+                "Update the shared task memory",
+                "Publish a collaborator-ready summary",
+            ],
+        },
+    },
 ]
 
 

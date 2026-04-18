@@ -12,6 +12,7 @@ from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.db.session import SessionLocal
 from app.core.request_context import update_runtime_request_context
 from app.models.entities import (
     Artifact,
@@ -29,6 +30,13 @@ from app.models.entities import (
 from app.schemas.chat import ChatRunRequest
 from app.services.agents.registry import AGENT_CATALOG
 from app.services.agents.orchestrator import SupervisorOrchestrator
+from app.services.governance import build_audit_record, enforce_workspace_quota
+from app.services.providers.catalog import (
+    build_role_model_catalog,
+    configured_provider_keys,
+    get_model_capability,
+    list_provider_capabilities,
+)
 from app.services.rag.retrieval import RetrievalFilters
 from app.services.rag.service import KnowledgeService
 from app.services.task_templates import get_task_template, list_task_templates
@@ -252,6 +260,15 @@ class RunService:
         result = await self.filesystem.read_text(relative_path=normalized_relative_path, max_chars=max_chars)
         if result.get("status") != "completed":
             raise ValueError(str(result.get("error") or "Workbench file read failed."))
+        related_result = await self.filesystem.suggest_related_files(
+            normalized_relative_path,
+            max_results=8,
+        )
+        related_files = (
+            list(related_result.get("related_files") or [])
+            if related_result.get("status") == "completed"
+            else []
+        )
 
         return {
             "workspace": workspace,
@@ -262,6 +279,7 @@ class RunService:
             "size_bytes": int(result.get("size_bytes") or path.stat().st_size),
             "truncated": bool(result.get("truncated")),
             "content": str(result.get("content") or ""),
+            "related_files": related_files,
         }
 
     async def save_workbench_file(
@@ -300,6 +318,7 @@ class RunService:
                 path=path,
                 content=content,
                 max_chars=max_chars,
+                related_files=[],
             ),
         }
 
@@ -315,6 +334,278 @@ class RunService:
         return {
             "workspace": workspace,
             **repo_payload,
+        }
+
+    async def create_workbench_branch(
+        self,
+        session: AsyncSession,
+        *,
+        workspace_id,
+        branch_name: str,
+        from_ref: str = "HEAD",
+        actor_id=None,
+    ) -> dict[str, Any]:
+        workspace_result = await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+        workspace = workspace_result.scalar_one()
+
+        normalized_branch = branch_name.strip()
+        if not normalized_branch:
+            raise ValueError("Branch name is required.")
+        if any(character.isspace() for character in normalized_branch):
+            raise ValueError("Branch names cannot contain whitespace.")
+
+        repo_payload = await self._build_workbench_repo_payload()
+        if not repo_payload["is_repo"]:
+            raise ValueError("Git repository metadata is unavailable for this workspace.")
+
+        checkout_result = await self._run_git_command("checkout", "-b", normalized_branch, from_ref or "HEAD")
+        if checkout_result is None:
+            raise ValueError("Git is not installed or is unavailable in the runtime environment.")
+        returncode, stdout, stderr = checkout_result
+        if returncode != 0:
+            raise ValueError((stderr or stdout or "Workbench branch creation failed.").strip())
+
+        repo_payload = await self._build_workbench_repo_payload()
+        session.add(
+            build_audit_record(
+                actor_id=actor_id,
+                workspace_id=workspace_id,
+                action="repo.branch.created",
+                resource_type="workspace_repo",
+                resource_id=str(workspace_id),
+                details={
+                    "branch_name": normalized_branch,
+                    "from_ref": from_ref or "HEAD",
+                    "head": repo_payload["head"],
+                },
+            )
+        )
+        await session.commit()
+        return {
+            "workspace": workspace,
+            "branch_name": normalized_branch,
+            "head": repo_payload["head"],
+            "repo": repo_payload,
+        }
+
+    async def commit_workbench_changes(
+        self,
+        session: AsyncSession,
+        *,
+        workspace_id,
+        message: str,
+        paths: list[str] | None = None,
+        actor_id=None,
+    ) -> dict[str, Any]:
+        workspace_result = await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+        workspace = workspace_result.scalar_one()
+
+        normalized_message = " ".join(message.split()).strip()
+        if not normalized_message:
+            raise ValueError("Commit message is required.")
+
+        repo_payload = await self._build_workbench_repo_payload()
+        if not repo_payload["is_repo"]:
+            raise ValueError("Git repository metadata is unavailable for this workspace.")
+
+        normalized_paths = [
+            self._normalize_workbench_relative_path(relative_path)
+            for relative_path in (paths or [])
+            if str(relative_path).strip()
+        ]
+        add_args = ["add", "--", *normalized_paths] if normalized_paths else ["add", "-A"]
+        add_result = await self._run_git_command(*add_args)
+        if add_result is None:
+            raise ValueError("Git is not installed or is unavailable in the runtime environment.")
+        add_returncode, add_stdout, add_stderr = add_result
+        if add_returncode != 0:
+            raise ValueError((add_stderr or add_stdout or "Workbench staging failed.").strip())
+
+        commit_result = await self._run_git_command("commit", "-m", normalized_message)
+        if commit_result is None:
+            raise ValueError("Git is not installed or is unavailable in the runtime environment.")
+        commit_returncode, commit_stdout, commit_stderr = commit_result
+        combined_output = (commit_stderr or commit_stdout or "").strip()
+        if commit_returncode != 0:
+            lowered_output = combined_output.lower()
+            if "nothing to commit" in lowered_output or "no changes added" in lowered_output:
+                repo_payload = await self._build_workbench_repo_payload()
+                return {
+                    "workspace": workspace,
+                    "committed": False,
+                    "message": normalized_message,
+                    "commit": repo_payload["head"],
+                    "note": "No changes were available to commit.",
+                    "repo": repo_payload,
+                }
+            raise ValueError(combined_output or "Workbench commit failed.")
+
+        repo_payload = await self._build_workbench_repo_payload()
+        session.add(
+            build_audit_record(
+                actor_id=actor_id,
+                workspace_id=workspace_id,
+                action="repo.commit.created",
+                resource_type="workspace_repo",
+                resource_id=str(workspace_id),
+                details={
+                    "message": normalized_message,
+                    "paths": normalized_paths,
+                    "commit": repo_payload["head"],
+                },
+            )
+        )
+        await session.commit()
+        return {
+            "workspace": workspace,
+            "committed": True,
+            "message": normalized_message,
+            "commit": repo_payload["head"],
+            "note": None,
+            "repo": repo_payload,
+        }
+
+    async def create_workbench_pull_request(
+        self,
+        session: AsyncSession,
+        *,
+        workspace_id,
+        title: str,
+        body: str | None = None,
+        base: str | None = None,
+        head: str | None = None,
+        draft: bool = True,
+        actor_id=None,
+    ) -> dict[str, Any]:
+        workspace_result = await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+        workspace = workspace_result.scalar_one()
+
+        normalized_title = " ".join(title.split()).strip()
+        if not normalized_title:
+            raise ValueError("Pull request title is required.")
+
+        repo_payload = await self._build_workbench_repo_payload()
+        if not repo_payload["is_repo"]:
+            raise ValueError("Git repository metadata is unavailable for this workspace.")
+
+        resolved_head = (head or repo_payload["branch"] or "").strip() or None
+        args = ["pr", "create", "--title", normalized_title, "--body", body or ""]
+        if base:
+            args.extend(["--base", base])
+        if resolved_head:
+            args.extend(["--head", resolved_head])
+        if draft:
+            args.append("--draft")
+
+        gh_result = await self._run_gh_command(*args)
+        if gh_result is None:
+            return {
+                "workspace": workspace,
+                "created": False,
+                "title": normalized_title,
+                "head": resolved_head,
+                "base": base,
+                "url": None,
+                "note": "GitHub CLI is not installed or is unavailable in the runtime environment.",
+            }
+
+        returncode, stdout, stderr = gh_result
+        if returncode != 0:
+            return {
+                "workspace": workspace,
+                "created": False,
+                "title": normalized_title,
+                "head": resolved_head,
+                "base": base,
+                "url": None,
+                "note": (stderr or stdout or "Pull request creation failed.").strip(),
+            }
+
+        url = next(
+            (line.strip() for line in stdout.splitlines() if line.strip().startswith("http")),
+            None,
+        )
+        session.add(
+            build_audit_record(
+                actor_id=actor_id,
+                workspace_id=workspace_id,
+                action="repo.pr.created",
+                resource_type="workspace_repo",
+                resource_id=str(workspace_id),
+                details={
+                    "title": normalized_title,
+                    "base": base,
+                    "head": resolved_head,
+                    "draft": draft,
+                    "url": url,
+                },
+            )
+        )
+        await session.commit()
+        return {
+            "workspace": workspace,
+            "created": True,
+            "title": normalized_title,
+            "head": resolved_head,
+            "base": base,
+            "url": url,
+            "note": None,
+        }
+
+    async def rollback_workbench_changes(
+        self,
+        session: AsyncSession,
+        *,
+        workspace_id,
+        paths: list[str] | None = None,
+        actor_id=None,
+    ) -> dict[str, Any]:
+        workspace_result = await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+        workspace = workspace_result.scalar_one()
+
+        repo_payload = await self._build_workbench_repo_payload()
+        if not repo_payload["is_repo"]:
+            raise ValueError("Git repository metadata is unavailable for this workspace.")
+
+        normalized_paths = [
+            self._normalize_workbench_relative_path(relative_path)
+            for relative_path in (paths or [])
+            if str(relative_path).strip()
+        ]
+        rollback_args = ["restore", "--source=HEAD", "--staged", "--worktree", "--", *(normalized_paths or ["."])]
+        rollback_result = await self._run_git_command(*rollback_args)
+        if rollback_result is None:
+            raise ValueError("Git is not installed or is unavailable in the runtime environment.")
+        rollback_returncode, rollback_stdout, rollback_stderr = rollback_result
+        if rollback_returncode != 0:
+            raise ValueError((rollback_stderr or rollback_stdout or "Workbench rollback failed.").strip())
+
+        repo_payload = await self._build_workbench_repo_payload()
+        note = None
+        if repo_payload["untracked_count"] > 0:
+            note = "Tracked changes were restored to HEAD. Untracked files were left untouched."
+        session.add(
+            build_audit_record(
+                actor_id=actor_id,
+                workspace_id=workspace_id,
+                action="repo.rollback.applied",
+                resource_type="workspace_repo",
+                resource_id=str(workspace_id),
+                details={
+                    "paths": normalized_paths or ["."],
+                    "head": repo_payload["head"],
+                    "untracked_count": repo_payload["untracked_count"],
+                    "note": note,
+                },
+            )
+        )
+        await session.commit()
+        return {
+            "workspace": workspace,
+            "restored": True,
+            "restored_paths": normalized_paths or ["."],
+            "note": note,
+            "repo": repo_payload,
         }
 
     async def get_workbench_diff(
@@ -620,6 +911,9 @@ class RunService:
         latest_activity: datetime | None = None
 
         agents: list[dict[str, Any]] = []
+        providers = list_provider_capabilities()
+        model_catalog = build_role_model_catalog()
+        configured_providers = configured_provider_keys()
         for key, definition in AGENT_CATALOG.items():
             activity = step_activity.get(definition.name, {})
             step_count = int(activity.get("step_count", 0))
@@ -662,6 +956,8 @@ class RunService:
                     "name": definition.name,
                     "fast_model": definition.fast_model,
                     "slow_model": definition.slow_model,
+                    "fast_model_details": get_model_capability(definition.fast_model),
+                    "slow_model_details": get_model_capability(definition.slow_model),
                     "specialties": list(definition.specialties),
                     "tools": [
                         {
@@ -702,8 +998,12 @@ class RunService:
         return {
             "workspace": workspace,
             "supervisor_model": settings.supervisor_model,
+            "planner_model": AGENT_CATALOG["planner"].slow_model,
+            "supervisor_model_details": get_model_capability(settings.supervisor_model),
+            "planner_model_details": get_model_capability(AGENT_CATALOG["planner"].slow_model),
             "overview": {
                 "total_agents": len(AGENT_CATALOG),
+                "configured_provider_count": len(configured_providers),
                 "active_agents_24h": active_agents_24h,
                 "busy_agents": min(busy_agents, len(AGENT_CATALOG)),
                 "idle_agents": idle_agents,
@@ -714,6 +1014,8 @@ class RunService:
                 "activity_window_hours": activity_window_hours,
                 "last_activity_at": latest_activity,
             },
+            "providers": providers,
+            "model_catalog": model_catalog,
             "agents": agents,
             "recent_activity": recent_activity[:14],
         }
@@ -1198,6 +1500,11 @@ class RunService:
                 raise ValueError("Project not found.")
             if project.workspace_id != workspace_id:
                 raise ValueError("Project does not belong to the requested workspace.")
+        thread_quota = await enforce_workspace_quota(
+            session,
+            workspace_id=workspace_id,
+            resource_key="threads",
+        )
         thread = ChatThread(
             workspace_id=workspace_id,
             project_id=project_id,
@@ -1207,13 +1514,22 @@ class RunService:
         )
         session.add(thread)
         session.add(
-            AuditLog(
+            build_audit_record(
                 actor_id=actor_id,
                 workspace_id=workspace_id,
                 action="thread.created",
                 resource_type="thread",
                 resource_id=str(thread.id),
-                details={"title": thread.title, "project_id": str(project_id) if project_id else None},
+                details={
+                    "title": thread.title,
+                    "project_id": str(project_id) if project_id else None,
+                    "quota": {
+                        "resource": "threads",
+                        "count_before_create": thread_quota["current_count"],
+                        "limit": thread_quota["limit"],
+                        "soft_enforcement": thread_quota["soft_enforcement"],
+                    },
+                },
             )
         )
         await session.commit()
@@ -1338,6 +1654,11 @@ class RunService:
         connectors: list[str] | None = None,
         actor_id=None,
     ) -> Project:
+        project_quota = await enforce_workspace_quota(
+            session,
+            workspace_id=workspace_id,
+            resource_key="projects",
+        )
         normalized_connectors: list[str] = []
         for connector in connectors or []:
             compact = str(connector or "").strip().lower()
@@ -1356,13 +1677,22 @@ class RunService:
         session.add(project)
         await session.flush()
         session.add(
-            AuditLog(
+            build_audit_record(
                 actor_id=actor_id,
                 workspace_id=workspace_id,
                 action="project.created",
                 resource_type="project",
                 resource_id=str(project.id),
-                details={"name": project.name, "connectors": normalized_connectors},
+                details={
+                    "name": project.name,
+                    "connectors": normalized_connectors,
+                    "quota": {
+                        "resource": "projects",
+                        "count_before_create": project_quota["current_count"],
+                        "limit": project_quota["limit"],
+                        "soft_enforcement": project_quota["soft_enforcement"],
+                    },
+                },
             )
         )
         await session.commit()
@@ -1379,6 +1709,9 @@ class RunService:
         thread = await self._resolve_thread(session, payload, actor_id=actor_id)
         project = await self._load_thread_project(session, thread)
         run = await self._start_run(session, payload=payload, thread=thread)
+        effective_prompt = self._build_effective_prompt(thread, payload.message)
+        execution_environment = self._execution_environment_payload(payload)
+        autonomy_mode = self._resolve_autonomy_mode(thread, payload)
         update_runtime_request_context(
             user_id=str(actor_id) if actor_id else None,
             workspace_id=str(payload.workspace_id),
@@ -1394,6 +1727,31 @@ class RunService:
             else []
         )
         try:
+            if self._should_fast_path_browser_task(effective_prompt):
+                result = await self._execute_browser_fast_path(
+                    payload=payload,
+                    run=run,
+                    thread=thread,
+                    project=project,
+                    grounding_context=grounding_context,
+                    goal_prompt=effective_prompt,
+                )
+                finalize_kwargs = {
+                    "payload": payload,
+                    "thread": thread,
+                    "project": project,
+                    "run": run,
+                    "result": result,
+                    "actor_id": actor_id,
+                }
+                if grounding_context:
+                    finalize_kwargs["grounding_context"] = grounding_context
+                finalized_thread, finalized_run, messages = await self._call_async_with_supported_kwargs(
+                    self._finalize_run,
+                    session,
+                    **finalize_kwargs,
+                )
+                return finalized_thread, finalized_run, messages
             execute_kwargs = {
                 "metadata": {
                     "workspace_id": str(payload.workspace_id),
@@ -1401,6 +1759,8 @@ class RunService:
                     "thread_id": str(thread.id),
                     "project_id": str(project.id) if project else None,
                     "actor_id": str(actor_id) if actor_id else None,
+                    "autonomy_mode": autonomy_mode,
+                    "execution_environment": execution_environment,
                 },
                 "memory_context": self._build_memory_context(thread=thread, project=project),
             }
@@ -1408,7 +1768,7 @@ class RunService:
                 execute_kwargs["grounding_context"] = grounding_context
             result = await self._call_async_with_supported_kwargs(
                 self.orchestrator.execute,
-                payload.message,
+                effective_prompt,
                 **execute_kwargs,
             )
             finalize_kwargs = {
@@ -1447,12 +1807,16 @@ class RunService:
         thread = await self._resolve_thread(session, payload, actor_id=actor_id)
         project = await self._load_thread_project(session, thread)
         run = await self._start_run(session, payload=payload, thread=thread)
+        effective_prompt = self._build_effective_prompt(thread, payload.message)
         queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        execution_environment = self._execution_environment_payload(payload)
+        autonomy_mode = self._resolve_autonomy_mode(thread, payload)
         update_runtime_request_context(
             user_id=str(actor_id) if actor_id else None,
             workspace_id=str(payload.workspace_id),
             run_id=str(run.id),
         )
+        stream_attached = True
         grounding_context = (
             await self._build_grounding_context(
                 session,
@@ -1464,31 +1828,54 @@ class RunService:
         )
 
         async def emit(event: str, data: dict) -> None:
+            if not stream_attached:
+                return
             await queue.put({"event": event, "data": data})
 
-        async def worker() -> None:
+        async def run_worker(worker_session: AsyncSession | None) -> None:
+            if worker_session is not None:
+                worker_thread_result = await worker_session.execute(
+                    select(ChatThread).where(ChatThread.id == thread.id)
+                )
+                worker_thread = worker_thread_result.scalar_one()
+                worker_project = await self._load_thread_project(worker_session, worker_thread)
+                worker_run_result = await worker_session.execute(select(Run).where(Run.id == run.id))
+                worker_run = worker_run_result.scalar_one()
+            else:
+                worker_thread = thread
+                worker_project = project
+                worker_run = run
+            update_runtime_request_context(
+                user_id=str(actor_id) if actor_id else None,
+                workspace_id=str(payload.workspace_id),
+                run_id=str(worker_run.id),
+            )
             try:
                 await emit(
                     "thread",
                     {
-                        "thread_id": str(thread.id),
-                        "workspace_id": str(thread.workspace_id),
-                        "project_id": str(getattr(thread, "project_id")) if getattr(thread, "project_id", None) else None,
-                        "title": getattr(thread, "title", "Task"),
-                        "task_memory": self._read_thread_shared_memory(thread),
-                        "project_memory": self._read_project_shared_memory(project) if project else None,
+                        "thread_id": str(worker_thread.id),
+                        "workspace_id": str(worker_thread.workspace_id),
+                        "project_id": (
+                            str(getattr(worker_thread, "project_id"))
+                            if getattr(worker_thread, "project_id", None)
+                            else None
+                        ),
+                        "title": getattr(worker_thread, "title", "Task"),
+                        "task_memory": self._read_thread_shared_memory(worker_thread),
+                        "project_memory": self._read_project_shared_memory(worker_project) if worker_project else None,
                     },
                 )
                 await emit(
                     "run.created",
                     {
-                        "run_id": str(run.id),
-                        "thread_id": str(thread.id),
-                        "workspace_id": str(run.workspace_id),
-                        "supervisor_model": getattr(run, "supervisor_model", None),
-                        "status": getattr(run, "status", "running"),
-                        "created_at": run.created_at.isoformat(),
-                        "user_message": getattr(run, "user_message", payload.message),
+                        "run_id": str(worker_run.id),
+                        "thread_id": str(worker_thread.id),
+                        "workspace_id": str(worker_run.workspace_id),
+                        "supervisor_model": getattr(worker_run, "supervisor_model", None),
+                        "status": getattr(worker_run, "status", "running"),
+                        "created_at": worker_run.created_at.isoformat(),
+                        "user_message": getattr(worker_run, "user_message", payload.message),
                     },
                 )
                 if grounding_context:
@@ -1502,38 +1889,96 @@ class RunService:
                             "observability": grounding_record.get("observability", {}),
                         },
                     )
+                if self._should_fast_path_browser_task(effective_prompt):
+                    result = await self._execute_browser_fast_path(
+                        payload=payload,
+                        run=worker_run,
+                        thread=worker_thread,
+                        project=worker_project,
+                        grounding_context=grounding_context,
+                        event_handler=emit,
+                        goal_prompt=effective_prompt,
+                    )
+                    finalize_kwargs = {
+                        "payload": payload,
+                        "result": result,
+                        "thread": worker_thread,
+                        "project": worker_project,
+                        "run": worker_run,
+                        "actor_id": actor_id,
+                    }
+                    if grounding_context:
+                        finalize_kwargs["grounding_context"] = grounding_context
+                    _, finalized_run, _ = await self._call_async_with_supported_kwargs(
+                        self._finalize_run,
+                        worker_session,
+                        **finalize_kwargs,
+                    )
+                    await emit(
+                        "final",
+                        {
+                            "response": result["final_response"],
+                            "summary": result["summary"],
+                            "citations": result["citations"],
+                            "execution_batches": result.get("execution_batches", []),
+                            "scratchpad": result.get("scratchpad", {}),
+                            "grounding": grounding_context[0] if grounding_context else None,
+                            "task_memory": self._read_thread_shared_memory(worker_thread),
+                            "project_memory": (
+                                self._read_project_shared_memory(worker_project)
+                                if worker_project
+                                else None
+                            ),
+                        },
+                    )
+                    await emit(
+                        "run.persisted",
+                        {
+                            "run_id": str(finalized_run.id),
+                            "thread_id": str(worker_thread.id),
+                            "status": finalized_run.status,
+                        },
+                    )
+                    return
                 execute_kwargs = {
                     "metadata": {
                         "workspace_id": str(payload.workspace_id),
-                        "run_id": str(run.id),
-                        "thread_id": str(thread.id),
-                        "project_id": str(project.id) if project else None,
+                        "run_id": str(worker_run.id),
+                        "thread_id": str(worker_thread.id),
+                        "project_id": str(worker_project.id) if worker_project else None,
                         "actor_id": str(actor_id) if actor_id else None,
-                        "composer_context": payload.composer_context if isinstance(payload.composer_context, dict) else {},
+                        "autonomy_mode": autonomy_mode,
+                        "execution_environment": execution_environment,
+                        "composer_context": (
+                            payload.composer_context if isinstance(payload.composer_context, dict) else {}
+                        ),
                     },
-                    "memory_context": self._build_memory_context(thread=thread, project=project),
+                    "memory_context": self._build_memory_context(
+                        thread=worker_thread,
+                        project=worker_project,
+                    ),
                     "event_handler": emit,
                 }
                 if grounding_context:
                     execute_kwargs["grounding_context"] = grounding_context
                 result = await self._call_async_with_supported_kwargs(
                     self.orchestrator.execute,
-                    payload.message,
+                    effective_prompt,
                     **execute_kwargs,
                 )
                 finalize_kwargs = {
                     "payload": payload,
                     "result": result,
-                    "thread": thread,
-                    "project": project,
-                    "run": run,
+                    "thread": worker_thread,
+                    "project": worker_project,
+                    "run": worker_run,
                     "actor_id": actor_id,
                 }
                 if grounding_context:
                     finalize_kwargs["grounding_context"] = grounding_context
                 _, finalized_run, _ = await self._call_async_with_supported_kwargs(
                     self._finalize_run,
-                    session,
+                    worker_session,
                     **finalize_kwargs,
                 )
                 await emit(
@@ -1545,23 +1990,27 @@ class RunService:
                         "execution_batches": result.get("execution_batches", []),
                         "scratchpad": result.get("scratchpad", {}),
                         "grounding": grounding_context[0] if grounding_context else None,
-                        "task_memory": self._read_thread_shared_memory(thread),
-                        "project_memory": self._read_project_shared_memory(project) if project else None,
+                        "task_memory": self._read_thread_shared_memory(worker_thread),
+                        "project_memory": (
+                            self._read_project_shared_memory(worker_project)
+                            if worker_project
+                            else None
+                        ),
                     },
                 )
                 await emit(
                     "run.persisted",
                     {
                         "run_id": str(finalized_run.id),
-                        "thread_id": str(thread.id),
+                        "thread_id": str(worker_thread.id),
                         "status": finalized_run.status,
                     },
                 )
             except Exception as exc:
                 await self._mark_run_failed(
-                    session,
-                    thread=thread,
-                    run=run,
+                    worker_session,
+                    thread=worker_thread,
+                    run=worker_run,
                     actor_id=actor_id,
                     error=str(exc),
                 )
@@ -1575,13 +2024,20 @@ class RunService:
                 await emit(
                     "run.persisted",
                     {
-                        "run_id": str(run.id),
-                        "thread_id": str(thread.id),
+                        "run_id": str(worker_run.id),
+                        "thread_id": str(worker_thread.id),
                         "status": "failed",
                     },
                 )
             finally:
                 await emit("done", {"status": "finished"})
+
+        async def worker() -> None:
+            if isinstance(session, AsyncSession):
+                async with SessionLocal() as worker_session:
+                    await run_worker(worker_session)
+                return
+            await run_worker(session)
 
         worker_task = asyncio.create_task(worker())
         try:
@@ -1591,7 +2047,227 @@ class RunService:
                 if event["event"] == "done":
                     break
         finally:
-            await worker_task
+            stream_attached = False
+            if worker_task.done():
+                await worker_task
+            else:
+                try:
+                    await asyncio.shield(worker_task)
+                except asyncio.CancelledError:
+                    pass
+
+    def _should_fast_path_browser_task(self, prompt: str) -> bool:
+        lowered = prompt.lower()
+        if not self.orchestrator._looks_like_browser_task(lowered):
+            return False
+        browser_actions = (
+            "open ",
+            "show ",
+            "visit ",
+            "go to ",
+            "navigate",
+            "login",
+            "log in",
+            "sign in",
+            "credentials",
+            "email:",
+            "password",
+            "pw:",
+        )
+        return any(token in lowered for token in browser_actions)
+
+    async def _execute_browser_fast_path(
+        self,
+        *,
+        payload: ChatRunRequest,
+        run: Run,
+        thread: ChatThread,
+        project: Project | None,
+        grounding_context: list[dict[str, Any]] | None = None,
+        event_handler: Any | None = None,
+        goal_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        step_index = 0
+        task = {
+            "key": "vision_automation",
+            "objective": "Open the requested site, perform the requested browser workflow, and keep the workbench live as the run evolves.",
+            "expected_output": "A completed browser session with live events, captured previews, and any resulting artifacts.",
+            "reason": "The request is a direct browser/UI automation task and should execute immediately.",
+        }
+        plan = [
+            {
+                "plan_index": 0,
+                "key": "vision_automation",
+                "objective": task["objective"],
+                "reason": task["reason"],
+                "dependencies": [],
+                "expected_output": task["expected_output"],
+                "execution_mode": "sequential",
+                "priority": 1,
+            }
+        ]
+        execution_batches = [["vision_automation"]]
+        metadata = {
+            "workspace_id": str(payload.workspace_id),
+            "run_id": str(run.id),
+            "thread_id": str(thread.id),
+            "project_id": str(project.id) if project else None,
+            "actor_id": None,
+            "composer_context": payload.composer_context if isinstance(payload.composer_context, dict) else {},
+        }
+
+        await self._emit(event_handler, "plan", {"plan": plan})
+        await self._emit(event_handler, "batches", {"batches": execution_batches})
+        await self._emit(
+            event_handler,
+            "batch.started",
+            {
+                "batch_index": 0,
+                "tasks": ["vision_automation"],
+                "statuses": {"vision_automation": "running"},
+            },
+        )
+        await self._emit(
+            event_handler,
+            "step.started",
+            {
+                "step_index": step_index,
+                "task_key": "vision_automation",
+                "agent_name": "Vision / Automation Agent",
+                "objective": task["objective"],
+                "expected_output": task["expected_output"],
+                "batch_index": 0,
+                "status": "running",
+            },
+        )
+
+        tool_result = await self.tools_registry.execute_named(
+            "vision_automation",
+            "browser_automation",
+            {"goal": goal_prompt or payload.message},
+            event_handler=event_handler,
+            event_context={
+                "agent_name": "Vision / Automation Agent",
+                "agent_key": "vision_automation",
+                "run_id": str(run.id),
+                "thread_id": str(thread.id),
+                "workspace_id": str(payload.workspace_id),
+                "step_index": step_index,
+                "batch_index": 0,
+            },
+        )
+        content = self._browser_fast_path_content(payload.message, tool_result)
+        validation = self.orchestrator._validate_result(
+            type("BrowserTask", (), task)(),
+            content,
+            [tool_result],
+        )
+        confidence = round(0.72 if str(tool_result.get("status") or "") == "completed" else 0.46, 4)
+        step = {
+            "agent_name": "Vision / Automation Agent",
+            "step_index": step_index,
+            "content": content,
+            "model": "browser_automation",
+            "provider": "tool",
+            "fallback": str(tool_result.get("status") or "") != "completed",
+            "dependencies": [],
+            "execution_mode": "direct_browser_fast_path",
+            "batch_index": 0,
+            "validation": validation,
+            "expected_output": task["expected_output"],
+            "tools": [tool_result],
+            "confidence": confidence,
+        }
+        raw_citations = self.orchestrator._citations_from_tool("Vision / Automation Agent", tool_result)
+        for index, citation in enumerate(raw_citations, start=1):
+            citation["reference_id"] = citation.get("reference_id") or f"S{index}"
+        final_response = self.orchestrator._ensure_citation_references(content, raw_citations)
+        citations = self.orchestrator._finalize_citations(final_response, raw_citations)
+        summary = self.tools_registry._tool_summary(tool_result)
+
+        await self._emit(
+            event_handler,
+            "step.completed",
+            {
+                "step_index": step_index,
+                "task_key": "vision_automation",
+                "agent_name": "Vision / Automation Agent",
+                "status": "completed" if not step["fallback"] else "failed",
+                "content": content,
+                "confidence": confidence,
+                "batch_index": 0,
+                "validation": validation,
+                "tools": [tool_result],
+            },
+        )
+
+        return {
+            "plan": plan,
+            "steps": [step],
+            "final_response": final_response,
+            "summary": summary,
+            "citations": citations,
+            "execution_batches": execution_batches,
+            "scratchpad": {
+                "mode": "browser_fast_path",
+                "tool": "browser_automation",
+                "grounding_sources": grounding_context or [],
+                "metadata": metadata,
+            },
+        }
+
+    def _build_effective_prompt(self, thread: ChatThread, message: str) -> str:
+        metadata_value = getattr(thread, "metadata_", None)
+        if not isinstance(metadata_value, dict):
+            metadata_value = getattr(thread, "metadata", None)
+        metadata = metadata_value if isinstance(metadata_value, dict) else {}
+        task_brief = str(metadata.get("task_brief") or "").strip()
+        if not task_brief:
+            return message
+        return (
+            "Persistent task brief for this thread:\n"
+            f"{task_brief}\n\n"
+            "Latest user instruction:\n"
+            f"{message}"
+        )
+
+    def _browser_fast_path_content(self, prompt: str, tool_result: dict[str, Any]) -> str:
+        status = str(tool_result.get("status") or "completed")
+        final_url = str(tool_result.get("final_url") or tool_result.get("target_url") or "").strip()
+        summary = self.tools_registry._tool_summary(tool_result)
+        extracted = self._compact_grounding_text(str(tool_result.get("extracted_text") or ""), limit=220)
+        executed_actions = tool_result.get("executed_actions")
+        action_count = len(executed_actions) if isinstance(executed_actions, list) else 0
+        if status == "completed":
+            continue_lines = []
+            if "login" in prompt.lower() or "log in" in prompt.lower() or "sign in" in prompt.lower():
+                continue_lines.append("1. Continue from the signed-in browser session.")
+                continue_lines.append("2. Open the dashboard or the next page you want to use.")
+                continue_lines.append("3. Capture a screenshot or export the current page state.")
+            else:
+                continue_lines.append("1. Continue browsing from the current page.")
+                continue_lines.append("2. Ask me to click, fill, or submit the next step.")
+                continue_lines.append("3. Capture a screenshot or save the current page.")
+            return (
+                "Done.\n\n"
+                f"I completed the browser task and reached {final_url or 'the requested page'}."
+                f"{f' I executed {action_count} browser actions.' if action_count else ''}"
+                f"{f' Current page evidence: {extracted}.' if extracted else ''}\n\n"
+                "How to continue:\n"
+                + "\n".join(continue_lines)
+            )
+        error = str(tool_result.get("error") or self.tools_registry._tool_summary(tool_result))
+        continue_lines = [
+            "1. Retry the same action from the current page state.",
+            "2. Open the login page directly and try again.",
+            "3. Show me the current browser screen and I will continue from there.",
+        ]
+        return (
+            "I couldn't complete that browser action.\n\n"
+            f"Reason: {error}\n\n"
+            "How to continue:\n"
+            + "\n".join(continue_lines)
+        )
 
     async def _resolve_thread(
         self,
@@ -1656,6 +2332,7 @@ class RunService:
                 "selected_template_name": template.get("name") if isinstance(template, dict) else None,
                 "selected_template_category": template.get("category") if isinstance(template, dict) else None,
             }
+        execution_environment = self._execution_environment_payload(payload)
 
         run = Run(
             thread_id=thread.id,
@@ -1689,11 +2366,19 @@ class RunService:
                         if payload.template_key
                         else {}
                     ),
+                    "autonomy_mode": self._resolve_autonomy_mode(thread, payload),
                     **(
                         {
                             "composer_context": payload.composer_context,
                         }
                         if isinstance(payload.composer_context, dict) and payload.composer_context
+                        else {}
+                    ),
+                    **(
+                        {
+                            "execution_environment": execution_environment,
+                        }
+                        if execution_environment
                         else {}
                     ),
                 },
@@ -1768,6 +2453,8 @@ class RunService:
                     "task_memory": task_memory,
                     "project_memory": project_memory,
                     "template_key": payload.template_key,
+                    "autonomy_mode": self._resolve_autonomy_mode(thread, payload),
+                    "execution_environment": self._execution_environment_payload(payload),
                     "composer_context": (
                         payload.composer_context
                         if isinstance(payload.composer_context, dict) and payload.composer_context
@@ -1786,6 +2473,7 @@ class RunService:
                 confidence=step["confidence"],
                 input_payload={
                     "prompt": payload.message,
+                    "execution_environment": self._execution_environment_payload(payload) or {},
                     "composer_context": (
                         payload.composer_context
                         if isinstance(payload.composer_context, dict) and payload.composer_context
@@ -1814,6 +2502,7 @@ class RunService:
                         status="completed",
                         input_payload={
                             "prompt": payload.message,
+                            "execution_environment": self._execution_environment_payload(payload) or {},
                             "composer_context": (
                                 payload.composer_context
                                 if isinstance(payload.composer_context, dict) and payload.composer_context
@@ -1834,6 +2523,7 @@ class RunService:
                 details={
                     "thread_id": str(thread.id),
                     "plan_length": len(result["plan"]),
+                    "execution_environment": self._execution_environment_payload(payload),
                     "execution_batches": result.get("execution_batches", []),
                     "task_memory_run_count": task_memory.get("run_count", 0),
                     "project_memory_run_count": (
@@ -1851,6 +2541,32 @@ class RunService:
         await session.refresh(run)
         messages = await self.get_messages(session, thread.id)
         return thread, run, messages
+
+    def _execution_environment_payload(self, payload: ChatRunRequest) -> dict[str, Any] | None:
+        execution_environment = getattr(payload, "execution_environment", None)
+        if execution_environment is None:
+            return None
+        if hasattr(execution_environment, "model_dump"):
+            dumped = execution_environment.model_dump(exclude_none=True)
+            return dumped if isinstance(dumped, dict) and dumped else None
+        if isinstance(execution_environment, dict):
+            return execution_environment or None
+        return None
+
+    def _resolve_autonomy_mode(self, thread: ChatThread, payload: ChatRunRequest) -> str:
+        payload_value = getattr(payload, "autonomy_mode", None)
+        if payload_value in {"safe", "autonomous", "maximum"}:
+            return str(payload_value)
+
+        metadata_value = getattr(thread, "metadata_", None)
+        if not isinstance(metadata_value, dict):
+            metadata_value = getattr(thread, "metadata", None)
+        if isinstance(metadata_value, dict):
+            stored = metadata_value.get("autonomy_mode")
+            if stored in {"safe", "autonomous", "maximum"}:
+                return str(stored)
+
+        return "autonomous"
 
     async def _build_grounding_context(
         self,
@@ -1970,6 +2686,15 @@ class RunService:
             if key in signature.parameters
         }
         return await func(*args, **supported_kwargs)
+
+    async def _emit(
+        self,
+        event_handler: Any | None,
+        event: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if event_handler is not None:
+            await event_handler(event, payload)
 
     def _empty_shared_memory(self) -> dict[str, Any]:
         return {
@@ -2478,6 +3203,7 @@ class RunService:
         path: Path,
         content: str,
         max_chars: int,
+        related_files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         truncated = len(content) > max_chars
         return {
@@ -2489,6 +3215,7 @@ class RunService:
             "size_bytes": path.stat().st_size,
             "truncated": truncated,
             "content": content[:max_chars],
+            "related_files": related_files or [],
         }
 
     def resolve_workbench_path(self, relative_path: str) -> Path:
@@ -2616,6 +3343,23 @@ class RunService:
                 capture_output=True,
                 text=True,
                 timeout=12,
+                check=False,
+            )
+            return completed.returncode, completed.stdout, completed.stderr
+
+        try:
+            return await asyncio.to_thread(_runner)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+
+    async def _run_gh_command(self, *args: str) -> tuple[int, str, str] | None:
+        def _runner() -> tuple[int, str, str]:
+            completed = subprocess.run(
+                ["gh", *args],
+                cwd=self.filesystem.root,
+                capture_output=True,
+                text=True,
+                timeout=20,
                 check=False,
             )
             return completed.returncode, completed.stdout, completed.stderr

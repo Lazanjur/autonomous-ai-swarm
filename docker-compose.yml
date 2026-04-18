@@ -5,9 +5,9 @@ services:
     image: pgvector/pgvector:pg16
     container_name: swarm-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: autonomous_ai_swarm
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-autonomous_ai_swarm}
     ports:
       - "5432:5432"
     volumes:
@@ -50,8 +50,6 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/autonomous_ai_swarm
-      ASYNC_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/autonomous_ai_swarm
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
       ALIBABA_API_KEY: ${ALIBABA_API_KEY:-}

@@ -841,6 +841,11 @@ class AutomationService:
                 message=self._automation_prompt(automation),
                 mode="autonomous",
                 use_retrieval=bool(automation.definition.get("use_retrieval", True)),
+                execution_environment=(
+                    automation.definition.get("execution_environment")
+                    if isinstance(automation.definition.get("execution_environment"), dict)
+                    else None
+                ),
             )
             thread, run, _ = await asyncio.wait_for(
                 self.run_service.create_run(session, payload, actor_id=actor_id),

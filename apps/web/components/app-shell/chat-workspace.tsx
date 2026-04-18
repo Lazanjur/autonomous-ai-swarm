@@ -38,6 +38,7 @@ import {
   Pause,
   Play,
   RefreshCw,
+  RotateCcw,
   Save,
   SendHorizontal,
   Settings2,
@@ -49,6 +50,8 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type {
+  ChatAgentsData,
+  AutonomyMode,
   ChatRun,
   ChatRunRequestPayload,
   DocumentUploadResponse,
@@ -66,8 +69,10 @@ import type {
   LiveRunEvent,
   LiveRunStepState,
   Message,
+  ModelCapability,
   RunStepRecord,
   SharedMemory,
+  ExecutionEnvironmentRequest,
   TaskTemplate,
   Thread,
   WorkbenchTreeEntry,
@@ -113,6 +118,23 @@ type OperatorTimelineEntry = {
   meta?: string[];
 };
 
+type SideBySideDiffCellKind = "context" | "removed" | "added" | "empty";
+
+type SideBySideDiffRow =
+  | {
+      kind: "hunk";
+      header: string;
+    }
+  | {
+      kind: "content";
+      leftLineNumber: number | null;
+      rightLineNumber: number | null;
+      leftText: string;
+      rightText: string;
+      leftKind: SideBySideDiffCellKind;
+      rightKind: SideBySideDiffCellKind;
+    };
+
 type TaskChecklistItem = {
   id: string;
   step_index: number;
@@ -133,7 +155,7 @@ type SharedMemorySection = {
 
 type ApprovalRequest = {
   id: string;
-  kind: "browser_interaction" | "external_delivery";
+  kind: "browser_interaction" | "browser_takeover" | "external_delivery";
   title: string;
   reason: string;
   approvalPrompt: string;
@@ -215,28 +237,94 @@ type BrowserSpeechRecognitionLike = {
 
 type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognitionLike;
 
-const MODEL_PROFILE_OPTIONS = [
-  {
-    value: "qwen3.5-flash",
-    label: "Qwen3.5 Flash",
-    description: "Fast default task profile"
-  },
-  {
-    value: "qwen3.6-plus",
-    label: "Qwen3.6 Plus",
-    description: "Deeper research and synthesis"
-  },
-  {
-    value: "qwen3-max",
-    label: "Qwen3 Max",
-    description: "Highest reasoning budget"
-  },
-  {
-    value: "qwen3-coder-plus",
-    label: "Qwen3 Coder Plus",
-    description: "Code-heavy implementation focus"
-  }
+type ModelProfileOption = {
+  value: string;
+  label: string;
+  menuLabel: string;
+  description: string;
+  configured: boolean;
+};
+
+const PREMIUM_TEMPLATE_KEYS = new Set([
+  "autonomous_app_builder",
+  "live_debugging_assistant",
+  "team_delivery_swarm"
+]);
+
+const EXECUTION_TARGET_OS_OPTIONS = [
+  { value: "", label: "Auto OS" },
+  { value: "linux", label: "Linux" },
+  { value: "windows", label: "Windows" },
+  { value: "macos", label: "macOS" }
 ] as const;
+
+const EXECUTION_RUNTIME_PROFILE_OPTIONS = [
+  { value: "auto", label: "Auto runtime" },
+  { value: "python", label: "Python" },
+  { value: "node", label: "Node" },
+  { value: "shell", label: "Shell" },
+  { value: "powershell", label: "PowerShell" }
+] as const;
+
+const EXECUTION_RESOURCE_TIER_OPTIONS = [
+  { value: "", label: "Auto tier" },
+  { value: "small", label: "Small" },
+  { value: "medium", label: "Medium" },
+  { value: "large", label: "Large" },
+  { value: "gpu", label: "GPU" }
+] as const;
+
+const EXECUTION_PERSISTENCE_SCOPE_OPTIONS = [
+  { value: "", label: "Auto scope" },
+  { value: "task", label: "Task-scoped" },
+  { value: "workspace", label: "Workspace-scoped" }
+] as const;
+
+const AUTONOMY_MODE_OPTIONS = [
+  {
+    value: "safe",
+    label: "Safe",
+    description: "Move carefully, stop sooner on uncertainty, and surface blockers explicitly."
+  },
+  {
+    value: "autonomous",
+    label: "Autonomous",
+    description: "Default behavior: handle normal steps automatically and stop only for real blockers."
+  },
+  {
+    value: "maximum",
+    label: "Maximum autonomy",
+    description: "Push through directly implied allowed steps and interrupt only for hard limits or takeover."
+  }
+] as const satisfies ReadonlyArray<{
+  value: AutonomyMode;
+  label: string;
+  description: string;
+}>;
+
+const PREMIUM_TEMPLATE_ENVIRONMENT_PRESETS: Record<string, ExecutionEnvironmentRequest> = {
+  autonomous_app_builder: {
+    target_os: "linux",
+    runtime_profile: "node",
+    resource_tier: "large",
+    network_access: true,
+    persistence_scope: "workspace"
+  },
+  live_debugging_assistant: {
+    target_os: "linux",
+    runtime_profile: "shell",
+    resource_tier: "medium",
+    network_access: true,
+    persistence_scope: "task"
+  },
+  team_delivery_swarm: {
+    target_os: "linux",
+    runtime_profile: "auto",
+    resource_tier: "medium",
+    network_access: true,
+    persistence_scope: "workspace"
+  }
+};
 
 const COMPOSER_SHORTCUTS: ComposerShortcut[] = [
   {
@@ -308,7 +396,120 @@ const DEFAULT_WORKSPACE_SPLIT = 51;
 const MIN_WORKSPACE_SPLIT = 46;
 const MAX_WORKSPACE_SPLIT = 66;
 const WORKSPACE_LAYOUT_STORAGE_KEY = "swarm.workspace.layout.v2";
+const OPTIMISTIC_BROWSER_SESSION_ID = "pending-browser-session";
 const CITATION_REFERENCE_PATTERN = /\[(S\d+)\]/g;
+
+function summarizeModelStrengths(model: ModelCapability) {
+  const strengths: string[] = [];
+  if (model.supports_research) {
+    strengths.push("Research");
+  }
+  if (model.supports_structured_output) {
+    strengths.push("Content");
+  }
+  if (model.supports_coding) {
+    strengths.push("Coding");
+  }
+  if (model.supports_ui_diagrams) {
+    strengths.push("UI/Diagrams");
+  }
+  if (model.supports_planning || model.supports_reasoning) {
+    strengths.push("Planning");
+  }
+  if (model.supports_vision) {
+    strengths.push("Vision");
+  }
+  const deduped = Array.from(new Set(strengths));
+  return deduped.length > 0 ? deduped : ["General"];
+}
+
+function formatModelLabel(modelName: string) {
+  const normalized = modelName.trim();
+  const knownLabels: Record<string, string> = {
+    "qwen3.5-flash": "Qwen3.5 Flash",
+    "qwen3.6-plus": "Qwen3.6 Plus",
+    "qwen3-max": "Qwen3 Max",
+    "qwen3.5-plus": "Qwen3.5 Plus",
+    "qwen3-coder-flash": "Qwen3 Coder Flash",
+    "qwen3-coder-plus": "Qwen3 Coder Plus",
+    "qwen3-vl-flash": "Qwen3 VL Flash",
+    "qwen3-vl-plus": "Qwen3 VL Plus",
+    "gpt-5.4": "GPT-5.4",
+    "gpt-5.4-mini": "GPT-5.4 Mini",
+    "gpt-5.2": "GPT-5.2",
+    "claude-sonnet-4": "Claude Sonnet 4",
+    "claude-opus-4": "Claude Opus 4",
+    "gemini-2.5-pro": "Gemini 2.5 Pro",
+    "gemini-2.5-flash": "Gemini 2.5 Flash"
+  };
+
+  return knownLabels[normalized] ?? normalized;
+}
+
+function isTaskRunnableModel(model: ModelCapability) {
+  return Boolean(
+    model.supports_chat ||
+      model.supports_reasoning ||
+      model.supports_planning ||
+      model.supports_research ||
+      model.supports_coding ||
+      model.supports_ui_diagrams ||
+      model.supports_vision ||
+      model.supports_structured_output
+  );
+}
+
+function buildModelProfileOptions(chatAgents?: ChatAgentsData): ModelProfileOption[] {
+  const catalog = (chatAgents?.model_catalog ?? [])
+    .filter((model) => isTaskRunnableModel(model))
+    .sort((left, right) => {
+      if (left.name === "qwen3.5-flash" || right.name === "qwen3.5-flash") {
+        return left.name === "qwen3.5-flash" ? -1 : 1;
+      }
+      if (left.configured !== right.configured) {
+        return left.configured ? -1 : 1;
+      }
+      return left.name.localeCompare(right.name);
+    });
+
+  if (catalog.length === 0) {
+    return [
+      {
+        value: "qwen3.5-flash",
+        label: "Qwen3.5 Flash",
+        menuLabel: "Qwen3.5 Flash — Auto swarm orchestration",
+        description: "Auto swarm orchestration for this task",
+        configured: true
+      }
+    ];
+  }
+
+  return catalog.map((model) => {
+    const modelLabel = formatModelLabel(model.name);
+    if (model.name === "qwen3.5-flash") {
+      return {
+        value: model.name,
+        label: modelLabel,
+        menuLabel: `${modelLabel} — Auto swarm orchestration`,
+        description: "Auto swarm orchestration for this task",
+        configured: model.configured
+      };
+    }
+    const strengths = summarizeModelStrengths(model);
+    const suffix = model.configured
+      ? strengths.join(", ")
+      : `${strengths.join(", ")} • Not configured`;
+    return {
+      value: model.name,
+      label: modelLabel,
+      menuLabel: `${modelLabel} — ${suffix}`,
+      description: model.configured
+        ? `Best for ${strengths.join(", ")}`
+        : `Best for ${strengths.join(", ")} • Not configured on this server`,
+      configured: model.configured
+    };
+  });
+}
 
 function statusLabel(status: string) {
   return status.replaceAll(".", " ").replaceAll("_", " ");
@@ -469,6 +670,97 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function normalizeExecutionEnvironment(value: unknown): ExecutionEnvironmentRequest | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const normalized: ExecutionEnvironmentRequest = {};
+
+  if (value.target_os === "linux" || value.target_os === "windows" || value.target_os === "macos") {
+    normalized.target_os = value.target_os;
+  }
+
+  if (
+    value.runtime_profile === "auto" ||
+    value.runtime_profile === "python" ||
+    value.runtime_profile === "node" ||
+    value.runtime_profile === "shell" ||
+    value.runtime_profile === "powershell"
+  ) {
+    normalized.runtime_profile = value.runtime_profile;
+  }
+
+  if (
+    value.resource_tier === "small" ||
+    value.resource_tier === "medium" ||
+    value.resource_tier === "large" ||
+    value.resource_tier === "gpu"
+  ) {
+    normalized.resource_tier = value.resource_tier;
+  }
+
+  if (typeof value.network_access === "boolean") {
+    normalized.network_access = value.network_access;
+  }
+
+  if (value.persistence_scope === "task" || value.persistence_scope === "workspace") {
+    normalized.persistence_scope = value.persistence_scope;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+function cleanExecutionEnvironment(
+  value: ExecutionEnvironmentRequest | null | undefined
+): ExecutionEnvironmentRequest | null {
+  return normalizeExecutionEnvironment(value ?? null);
+}
+
+function normalizeAutonomyMode(value: unknown): AutonomyMode {
+  if (value === "safe" || value === "autonomous" || value === "maximum") {
+    return value;
+  }
+  return "autonomous";
+}
+
+function autonomyModeSummary(value: AutonomyMode) {
+  switch (value) {
+    case "safe":
+      return "Smaller steps, earlier blockers, and more conservative execution.";
+    case "maximum":
+      return "Aggressive automatic execution inside hard platform boundaries.";
+    case "autonomous":
+    default:
+      return "Balanced automatic execution with interruptions only for real blockers.";
+  }
+}
+
+function executionEnvironmentSummary(value: ExecutionEnvironmentRequest | null | undefined) {
+  const normalized = cleanExecutionEnvironment(value);
+  if (!normalized) {
+    return "Auto-select the runner, runtime, and scale for each task.";
+  }
+
+  const parts: string[] = [];
+  if (normalized.target_os) {
+    parts.push(normalized.target_os);
+  }
+  if (normalized.runtime_profile) {
+    parts.push(normalized.runtime_profile);
+  }
+  if (normalized.resource_tier) {
+    parts.push(normalized.resource_tier);
+  }
+  if (typeof normalized.network_access === "boolean") {
+    parts.push(normalized.network_access ? "network on" : "network off");
+  }
+  if (normalized.persistence_scope) {
+    parts.push(`${normalized.persistence_scope} persistence`);
+  }
+  return parts.join(" · ");
+}
+
 function isDefined<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
 }
@@ -488,6 +780,13 @@ function compactText(value: string | null | undefined, limit = 220) {
   return compact.length > limit ? `${compact.slice(0, limit)}...` : compact;
 }
 
+function isTerminalRunStatus(status: string | null | undefined) {
+  if (!status) {
+    return false;
+  }
+  return ["completed", "failed", "cancelled", "canceled"].includes(status.toLowerCase());
+}
+
 function extractCitationReferenceIds(content: string) {
   return Array.from(new Set(Array.from(content.matchAll(CITATION_REFERENCE_PATTERN), (match) => match[1])));
 }
@@ -504,34 +803,258 @@ function citationHref(workspaceId: string, citation: Message["citations"][number
   return null;
 }
 
+function renderInlineMessageText(
+  content: string,
+  citationLookup: Map<string, Message["citations"][number]>,
+  keyPrefix: string
+) {
+  const citationSegments = content.split(CITATION_REFERENCE_PATTERN);
+  return citationSegments.flatMap((segment, segmentIndex) => {
+    const citation = citationLookup.get(segment);
+    if (citation) {
+      return (
+        <span
+          key={`${keyPrefix}-citation-${segmentIndex}`}
+          title={citation.title}
+          className="mx-1 inline-flex rounded-full border border-black/10 bg-sand/75 px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-black/65"
+        >
+          [{segment}]
+        </span>
+      );
+    }
+
+    const richSegments = segment.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
+    return richSegments.filter(Boolean).map((part, richIndex) => {
+      if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+        return (
+          <code
+            key={`${keyPrefix}-code-${segmentIndex}-${richIndex}`}
+            className="rounded-md border border-black/8 bg-black/[0.04] px-1.5 py-0.5 text-[0.92em] text-black/[0.82]"
+          >
+            {part.slice(1, -1)}
+          </code>
+        );
+      }
+      if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+        return (
+          <strong key={`${keyPrefix}-bold-${segmentIndex}-${richIndex}`} className="font-semibold text-black/[0.82]">
+            {part.slice(2, -2)}
+          </strong>
+        );
+      }
+      if (part.startsWith("*") && part.endsWith("*") && part.length > 2) {
+        return (
+          <em key={`${keyPrefix}-italic-${segmentIndex}-${richIndex}`} className="italic text-black/[0.74]">
+            {part.slice(1, -1)}
+          </em>
+        );
+      }
+      return <span key={`${keyPrefix}-text-${segmentIndex}-${richIndex}`}>{part}</span>;
+    });
+  });
+}
+
 function renderMessageContent(
   content: string,
   citationLookup: Map<string, Message["citations"][number]>
 ) {
-  const paragraphs = content.split(/\n{2,}/).filter((paragraph) => paragraph.trim().length > 0);
-  const blocks = paragraphs.length > 0 ? paragraphs : [content];
-  return blocks.map((paragraph, paragraphIndex) => {
-    const segments = paragraph.split(CITATION_REFERENCE_PATTERN);
-    return (
+  const lines = content.split(/\r?\n/);
+  const blocks: React.ReactNode[] = [];
+  let paragraphBuffer: string[] = [];
+  let howToContinueActive = false;
+  let fencedCodeBuffer: string[] | null = null;
+
+  const flushParagraph = () => {
+    const text = paragraphBuffer.join(" ").trim();
+    if (!text) {
+      paragraphBuffer = [];
+      return;
+    }
+    const paragraphIndex = blocks.length;
+    blocks.push(
       <p key={`paragraph-${paragraphIndex}`} className="text-sm leading-8 text-black/75">
-        {segments.map((segment, segmentIndex) => {
-          const citation = citationLookup.get(segment);
-          if (citation) {
-            return (
-              <span
-                key={`citation-ref-${paragraphIndex}-${segmentIndex}`}
-                title={citation.title}
-                className="mx-1 inline-flex rounded-full border border-black/10 bg-sand/75 px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-black/65"
-              >
-                [{segment}]
-              </span>
-            );
-          }
-          return <span key={`text-${paragraphIndex}-${segmentIndex}`}>{segment}</span>;
-        })}
+        {renderInlineMessageText(text, citationLookup, `paragraph-${paragraphIndex}`)}
       </p>
     );
-  });
+    paragraphBuffer = [];
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index] ?? "";
+    const trimmed = rawLine.trim();
+
+    if (trimmed.startsWith("```")) {
+      flushParagraph();
+      if (fencedCodeBuffer) {
+        const code = fencedCodeBuffer.join("\n").trimEnd();
+        blocks.push(
+          <pre
+            key={`code-block-${index}`}
+            className="overflow-x-auto rounded-[18px] border border-black/8 bg-black/[0.04] px-4 py-3 text-[13px] leading-6 text-black/[0.78]"
+          >
+            <code>{code}</code>
+          </pre>
+        );
+        fencedCodeBuffer = null;
+      } else {
+        fencedCodeBuffer = [];
+      }
+      continue;
+    }
+
+    if (fencedCodeBuffer) {
+      fencedCodeBuffer.push(rawLine);
+      continue;
+    }
+
+    if (!trimmed) {
+      flushParagraph();
+      continue;
+    }
+
+    if (/^---+$/.test(trimmed) || /^___+$/.test(trimmed)) {
+      flushParagraph();
+      blocks.push(<div key={`divider-${index}`} className="my-1 border-t border-black/[0.08]" />);
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (headingMatch) {
+      flushParagraph();
+      const headingLevel = headingMatch[1].length;
+      const headingText = headingMatch[2].trim();
+      howToContinueActive = headingText.toLowerCase().replace(/:\s*$/, "") === "how to continue";
+      const headingClasses =
+        headingLevel === 1
+          ? "text-[24px] font-semibold leading-[1.18] tracking-[-0.03em] text-black/[0.92]"
+          : headingLevel === 2
+            ? "text-[19px] font-semibold leading-[1.3] text-black/[0.88]"
+            : "text-[15px] font-semibold uppercase tracking-[0.12em] text-black/[0.58]";
+      blocks.push(
+        <div key={`heading-${index}`} className={headingClasses}>
+          {renderInlineMessageText(headingText, citationLookup, `heading-${index}`)}
+        </div>
+      );
+      continue;
+    }
+
+    const quoteLines: string[] = [];
+    while (index < lines.length) {
+      const candidate = (lines[index] ?? "").trim();
+      const quoteMatch = candidate.match(/^>\s?(.*)$/);
+      if (!quoteMatch) {
+        break;
+      }
+      quoteLines.push(quoteMatch[1].trim());
+      index += 1;
+    }
+    if (quoteLines.length > 0) {
+      flushParagraph();
+      blocks.push(
+        <div
+          key={`quote-${index}`}
+          className="border-l-2 border-black/[0.14] pl-4 text-sm leading-7 italic text-black/[0.62]"
+        >
+          {quoteLines.map((line, quoteIndex) => (
+            <div key={`quote-${index}-${quoteIndex}`}>
+              {renderInlineMessageText(line, citationLookup, `quote-${index}-${quoteIndex}`)}
+            </div>
+          ))}
+        </div>
+      );
+      index -= 1;
+      continue;
+    }
+
+    if (trimmed.toLowerCase().replace(/:\s*$/, "") === "how to continue") {
+      flushParagraph();
+      howToContinueActive = true;
+      blocks.push(
+        <div
+          key={`how-to-continue-${index}`}
+          className="text-[15px] leading-7 text-black/[0.7]"
+        >
+          How to continue:
+        </div>
+      );
+      continue;
+    }
+
+    const numberedItems: Array<{ marker: string; content: string }> = [];
+    while (index < lines.length) {
+      const candidate = (lines[index] ?? "").trim();
+      const numberedMatch = candidate.match(/^(\d+\.)\s+(.+)$/);
+      if (!numberedMatch) {
+        break;
+      }
+      numberedItems.push({ marker: numberedMatch[1].trim(), content: numberedMatch[2].trim() });
+      index += 1;
+    }
+    if (numberedItems.length > 0) {
+      flushParagraph();
+      blocks.push(
+        <div key={`numbered-${index}`} className="space-y-1.5">
+          {numberedItems.map((item, itemIndex) => (
+            <div
+              key={`numbered-${index}-${itemIndex}`}
+              className="flex items-start gap-2 text-sm leading-7 text-black/75"
+            >
+              <span className={cn("shrink-0 text-black/[0.72]", howToContinueActive && "font-semibold text-black/[0.82]")}>
+                {item.marker}
+              </span>
+              <span className={cn(howToContinueActive && "font-semibold text-black/[0.84]")}>
+                {renderInlineMessageText(item.content, citationLookup, `numbered-${index}-${itemIndex}`)}
+              </span>
+            </div>
+          ))}
+        </div>
+      );
+      howToContinueActive = false;
+      index -= 1;
+      continue;
+    }
+
+    const bulletItems: string[] = [];
+    while (index < lines.length) {
+      const candidate = (lines[index] ?? "").trim();
+      const bulletMatch = candidate.match(/^(?:[-*])\s+(.+)$/);
+      if (!bulletMatch) {
+        break;
+      }
+      bulletItems.push(bulletMatch[1].trim());
+      index += 1;
+    }
+    if (bulletItems.length > 0) {
+      flushParagraph();
+      blocks.push(
+        <div key={`bullets-${index}`} className="space-y-1.5">
+          {bulletItems.map((item, itemIndex) => (
+            <div key={`bullet-${index}-${itemIndex}`} className="flex items-start gap-2 text-sm leading-7 text-black/75">
+              <span className="mt-[0.45rem] h-1.5 w-1.5 rounded-full bg-black/30" />
+              <div>{renderInlineMessageText(item, citationLookup, `bullet-${index}-${itemIndex}`)}</div>
+            </div>
+          ))}
+        </div>
+      );
+      index -= 1;
+      continue;
+    }
+
+    paragraphBuffer.push(trimmed);
+  }
+
+  flushParagraph();
+  if (fencedCodeBuffer && fencedCodeBuffer.length > 0) {
+    blocks.push(
+      <pre
+        key="code-block-trailing"
+        className="overflow-x-auto rounded-[18px] border border-black/8 bg-black/[0.04] px-4 py-3 text-[13px] leading-6 text-black/[0.78]"
+      >
+        <code>{fencedCodeBuffer.join("\n").trimEnd()}</code>
+      </pre>
+    );
+  }
+  return blocks;
 }
 
 function toSharedMemory(value: unknown): SharedMemory | null {
@@ -618,7 +1141,7 @@ function toApprovalResolutions(value: unknown): ApprovalResolution[] {
 }
 
 function approvalRequestId(
-  kind: "browser_interaction" | "external_delivery",
+  kind: "browser_interaction" | "browser_takeover" | "external_delivery",
   options: {
     runId?: string | null;
     stepIndex?: number | null;
@@ -689,8 +1212,44 @@ function approvalRequestFromToolCall(
   }
 
   if (toolCall.tool_name === "browser_automation") {
+    const manualTakeover = normalizeManualTakeover(payload.manual_takeover);
     const skippedActions = Array.isArray(payload.skipped_actions) ? payload.skipped_actions : [];
     const warnings = Array.isArray(payload.warnings) ? payload.warnings.map(String) : [];
+    if (manualTakeover?.required) {
+      const targetUrl =
+        manualTakeover.target_url ??
+        (typeof payload.final_url === "string"
+          ? payload.final_url
+          : typeof payload.target_url === "string"
+            ? payload.target_url
+            : "the current page");
+      const markerSummary =
+        manualTakeover.detected_markers && manualTakeover.detected_markers.length > 0
+          ? `Detected: ${manualTakeover.detected_markers.join(", ")}`
+          : "A protection challenge needs a human to take over.";
+      return {
+        id: approvalRequestId("browser_takeover", {
+          runId,
+          stepIndex,
+          target: targetUrl,
+          reason: manualTakeover.reason
+        }),
+        kind: "browser_takeover",
+        title: "Take control of browser session",
+        reason:
+          manualTakeover.reason ??
+          "The browser reached a protected step that needs a human to finish before the agent can continue.",
+        approvalPrompt: "",
+        created_at: toolCall.created_at,
+        tool: toolCall.tool_name,
+        targetLabel: targetUrl,
+        detailLines: [
+          `Target: ${targetUrl}`,
+          markerSummary,
+          "Open the live page, complete the blocked step, then tell the agent what you did so it can continue."
+        ]
+      };
+    }
     const blockedByApproval =
       skippedActions.length > 0 &&
       warnings.some((warning) => /approval/i.test(warning));
@@ -731,6 +1290,54 @@ function approvalRequestFromToolCall(
 }
 
 function approvalRequestFromStream(event: string, data: Record<string, unknown>): ApprovalRequest | null {
+  if (event === "browser.snapshot" || event === "computer.session.completed") {
+    const manualTakeover = normalizeManualTakeover(data.manual_takeover);
+    if (!manualTakeover?.required) {
+      return null;
+    }
+    const now = new Date().toISOString();
+    const targetUrl =
+      manualTakeover.target_url ??
+      (typeof data.final_url === "string"
+        ? data.final_url
+        : typeof data.target_url === "string"
+          ? data.target_url
+          : "the current page");
+    const markerSummary =
+      manualTakeover.detected_markers && manualTakeover.detected_markers.length > 0
+        ? `Detected: ${manualTakeover.detected_markers.join(", ")}`
+        : "A protection challenge needs a human to take over.";
+    const runId = typeof data.run_id === "string" ? data.run_id : null;
+    const stepIndex =
+      typeof data.step_index === "number"
+        ? data.step_index
+        : typeof data.step_index === "string" && data.step_index.trim()
+          ? Number(data.step_index)
+          : null;
+    return {
+      id: approvalRequestId("browser_takeover", {
+        runId,
+        stepIndex: Number.isFinite(stepIndex) ? stepIndex : null,
+        target: targetUrl,
+        reason: manualTakeover.reason
+      }),
+      kind: "browser_takeover",
+      title: "Take control of browser session",
+      reason:
+        manualTakeover.reason ??
+        "The browser reached a protected step that needs a human to finish before the agent can continue.",
+      approvalPrompt: "",
+      created_at: now,
+      tool: typeof data.tool === "string" ? data.tool : "browser_automation",
+      targetLabel: targetUrl,
+      detailLines: [
+        `Target: ${targetUrl}`,
+        markerSummary,
+        "Open the live page, complete the blocked step, then tell the agent what you did so it can continue."
+      ]
+    };
+  }
+
   if (!(event === "tool.output" || event === "tool.completed")) {
     return null;
   }
@@ -785,8 +1392,44 @@ function approvalRequestFromStream(event: string, data: Record<string, unknown>)
   }
 
   if (tool === "browser_automation") {
+    const manualTakeover = normalizeManualTakeover(result.manual_takeover);
     const skippedActions = Array.isArray(result.skipped_actions) ? result.skipped_actions : [];
     const warnings = Array.isArray(result.warnings) ? result.warnings.map(String) : [];
+    if (manualTakeover?.required) {
+      const targetUrl =
+        manualTakeover.target_url ??
+        (typeof result.final_url === "string"
+          ? result.final_url
+          : typeof result.target_url === "string"
+            ? result.target_url
+            : "the current page");
+      const markerSummary =
+        manualTakeover.detected_markers && manualTakeover.detected_markers.length > 0
+          ? `Detected: ${manualTakeover.detected_markers.join(", ")}`
+          : "A protection challenge needs a human to take over.";
+      return {
+        id: approvalRequestId("browser_takeover", {
+          runId,
+          stepIndex: Number.isFinite(stepIndex) ? stepIndex : null,
+          target: targetUrl,
+          reason: manualTakeover.reason
+        }),
+        kind: "browser_takeover",
+        title: "Take control of browser session",
+        reason:
+          manualTakeover.reason ??
+          "The browser reached a protected step that needs a human to finish before the agent can continue.",
+        approvalPrompt: "",
+        created_at: now,
+        tool,
+        targetLabel: targetUrl,
+        detailLines: [
+          `Target: ${targetUrl}`,
+          markerSummary,
+          "Open the live page, complete the blocked step, then tell the agent what you did so it can continue."
+        ]
+      };
+    }
     if (skippedActions.length > 0 && warnings.some((warning) => /approval/i.test(warning))) {
       const targetUrl =
         typeof result.final_url === "string"
@@ -1221,6 +1864,116 @@ function normalizeActions(
     .filter(isDefined);
 }
 
+function parseUnifiedDiffRows(diffText: string): SideBySideDiffRow[] {
+  const rows: SideBySideDiffRow[] = [];
+  const lines = diffText.split("\n");
+  let leftLineNumber = 0;
+  let rightLineNumber = 0;
+  let removedBlock: Array<{ lineNumber: number; text: string }> = [];
+  let addedBlock: Array<{ lineNumber: number; text: string }> = [];
+
+  const flushChangeBlock = () => {
+    if (removedBlock.length === 0 && addedBlock.length === 0) {
+      return;
+    }
+    const count = Math.max(removedBlock.length, addedBlock.length);
+    for (let index = 0; index < count; index += 1) {
+      const removedLine = removedBlock[index] ?? null;
+      const addedLine = addedBlock[index] ?? null;
+      rows.push({
+        kind: "content",
+        leftLineNumber: removedLine?.lineNumber ?? null,
+        rightLineNumber: addedLine?.lineNumber ?? null,
+        leftText: removedLine?.text ?? "",
+        rightText: addedLine?.text ?? "",
+        leftKind: removedLine ? "removed" : "empty",
+        rightKind: addedLine ? "added" : "empty"
+      });
+    }
+    removedBlock = [];
+    addedBlock = [];
+  };
+
+  for (const line of lines) {
+    if (!line) {
+      continue;
+    }
+    if (line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("--- ") || line.startsWith("+++ ")) {
+      continue;
+    }
+    if (line.startsWith("@@")) {
+      flushChangeBlock();
+      const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      leftLineNumber = Number(match?.[1] ?? 0);
+      rightLineNumber = Number(match?.[2] ?? 0);
+      rows.push({ kind: "hunk", header: line });
+      continue;
+    }
+    if (line.startsWith("-")) {
+      removedBlock.push({
+        lineNumber: leftLineNumber,
+        text: line.slice(1)
+      });
+      leftLineNumber += 1;
+      continue;
+    }
+    if (line.startsWith("+")) {
+      addedBlock.push({
+        lineNumber: rightLineNumber,
+        text: line.slice(1)
+      });
+      rightLineNumber += 1;
+      continue;
+    }
+    if (line.startsWith("\\")) {
+      continue;
+    }
+    flushChangeBlock();
+    const content = line.startsWith(" ") ? line.slice(1) : line;
+    rows.push({
+      kind: "content",
+      leftLineNumber,
+      rightLineNumber,
+      leftText: content,
+      rightText: content,
+      leftKind: "context",
+      rightKind: "context"
+    });
+    leftLineNumber += 1;
+    rightLineNumber += 1;
+  }
+
+  flushChangeBlock();
+  return rows;
+}
+
+function workbenchDiffCellTone(kind: SideBySideDiffCellKind) {
+  switch (kind) {
+    case "removed":
+      return "bg-rose-50 text-rose-950";
+    case "added":
+      return "bg-emerald-50 text-emerald-950";
+    case "empty":
+      return "bg-black/[0.02] text-black/[0.2]";
+    default:
+      return "bg-white text-black/[0.78]";
+  }
+}
+
+function normalizeManualTakeover(value: unknown): ComputerSession["manual_takeover"] {
+  if (!isRecord(value) || value.required !== true) {
+    return null;
+  }
+  return {
+    required: true,
+    reason: typeof value.reason === "string" ? value.reason : null,
+    target_url: typeof value.target_url === "string" ? value.target_url : null,
+    detected_markers: Array.isArray(value.detected_markers)
+      ? value.detected_markers.map(String).filter(Boolean)
+      : []
+  };
+}
+
 async function consumeEventStream(
   response: Response,
   onEvent: (event: LiveRunEvent) => void
@@ -1232,22 +1985,23 @@ async function consumeEventStream(
 
   const decoder = new TextDecoder();
   let buffer = "";
+  let eventCount = 0;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
+  const flushFrames = (source: string) => {
+    const normalizedSource = source.replace(/\r\n/g, "\n");
+    const frames = normalizedSource.split("\n\n");
+    const remainder = frames.pop() ?? "";
 
     for (const frame of frames) {
+      const normalizedFrame = frame.trim();
+      if (!normalizedFrame) {
+        continue;
+      }
+
       let event = "message";
       const dataLines: string[] = [];
 
-      for (const line of frame.split("\n")) {
+      for (const line of normalizedFrame.split("\n")) {
         if (line.startsWith("event:")) {
           event = line.slice(6).trim();
         } else if (line.startsWith("data:")) {
@@ -1263,8 +2017,28 @@ async function consumeEventStream(
         event,
         data: JSON.parse(dataLines.join("\n")) as Record<string, unknown>
       });
+      eventCount += 1;
     }
+
+    return remainder;
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    buffer = flushFrames(buffer);
   }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    buffer = flushFrames(`${buffer}\n\n`);
+  }
+
+  return eventCount;
 }
 
 function upsertThread(threads: Thread[], thread: Thread) {
@@ -1345,6 +2119,7 @@ function buildBrowserSessionFromToolCall(toolCall: ToolCallRecord): ComputerSess
     extracted_text: typeof payload.extracted_text === "string" ? payload.extracted_text : null,
     warnings: toStringArray(payload.warnings),
     artifacts: extractArtifactsFromToolResult(payload),
+    manual_takeover: normalizeManualTakeover(payload.manual_takeover),
     metrics: isRecord(payload.metrics) ? payload.metrics : undefined
   };
 }
@@ -1374,6 +2149,18 @@ function buildTerminalSessionFromToolCall(toolCall: ToolCallRecord): ComputerSes
     timed_out: Boolean(payload.timed_out),
     artifacts: extractArtifactsFromToolResult(payload)
   };
+}
+
+function filterToolCallsForRun(
+  toolCalls: ToolCallRecord[],
+  stepById: Map<string, RunStepRecord>,
+  latestRunId?: string | null
+) {
+  if (!latestRunId) {
+    return toolCalls;
+  }
+  const filtered = toolCalls.filter((toolCall) => stepById.get(toolCall.run_step_id)?.run_id === latestRunId);
+  return filtered.length > 0 ? filtered : toolCalls;
 }
 
 function persistedTimelineEntry(toolCall: ToolCallRecord, stepById: Map<string, RunStepRecord>): OperatorTimelineEntry {
@@ -1451,6 +2238,7 @@ function sessionFromEventData(data: Record<string, unknown>): ComputerSession | 
     extracted_text: typeof data.extracted_text === "string" ? data.extracted_text : null,
     warnings: toStringArray(data.warnings),
     artifacts: toToolArtifacts(data.artifacts),
+    manual_takeover: normalizeManualTakeover(data.manual_takeover),
     metrics: isRecord(data.metrics) ? data.metrics : undefined,
     command: toStringArray(data.command),
     stdout: typeof data.stdout === "string" ? data.stdout : null,
@@ -1473,16 +2261,55 @@ function upsertSessionState(
   sessions: Record<string, ComputerSession>,
   next: ComputerSession
 ) {
+  const shouldReplaceOptimisticBrowserSession =
+    next.session_kind === "browser" &&
+    next.session_id !== OPTIMISTIC_BROWSER_SESSION_ID &&
+    Boolean(sessions[OPTIMISTIC_BROWSER_SESSION_ID]);
+
+  const optimisticBrowserSession = shouldReplaceOptimisticBrowserSession
+    ? sessions[OPTIMISTIC_BROWSER_SESSION_ID]
+    : null;
   const existing = sessions[next.session_id];
   if (!existing) {
-    return {
-      ...sessions,
-      [next.session_id]: {
-        ...next,
-        stdout: next.stdout ?? next.stdout_delta ?? null,
-        stderr: next.stderr ?? next.stderr_delta ?? null
-      }
+    const mergedNext =
+      optimisticBrowserSession && optimisticBrowserSession.session_kind === "browser"
+        ? {
+            ...optimisticBrowserSession,
+            ...next,
+            target_url: next.target_url ?? optimisticBrowserSession.target_url,
+            action_mode: next.action_mode ?? optimisticBrowserSession.action_mode,
+            created_at: optimisticBrowserSession.created_at,
+            executed_actions:
+              (next.executed_actions?.length ?? 0) > 0
+                ? next.executed_actions
+                : optimisticBrowserSession.executed_actions,
+            skipped_actions:
+              (next.skipped_actions?.length ?? 0) > 0
+                ? next.skipped_actions
+                : optimisticBrowserSession.skipped_actions,
+            warnings: [
+              ...new Set([
+                ...(optimisticBrowserSession.warnings ?? []),
+                ...(next.warnings ?? [])
+              ])
+            ],
+            artifacts: mergeArtifacts(
+              optimisticBrowserSession.artifacts ?? [],
+              next.artifacts ?? []
+            )
+          }
+        : next;
+
+    const nextSessions = { ...sessions };
+    if (shouldReplaceOptimisticBrowserSession) {
+      delete nextSessions[OPTIMISTIC_BROWSER_SESSION_ID];
+    }
+    nextSessions[next.session_id] = {
+      ...mergedNext,
+      stdout: mergedNext.stdout ?? mergedNext.stdout_delta ?? null,
+      stderr: mergedNext.stderr ?? mergedNext.stderr_delta ?? null
     };
+    return nextSessions;
   }
   const mergedStdout = next.stdout_delta
     ? `${existing.stdout ?? ""}${next.stdout_delta}`
@@ -1725,7 +2552,8 @@ function normalizeWorkbenchFilePayload(
     extension: typeof payload.extension === "string" ? payload.extension : null,
     size_bytes: Number(payload.size_bytes ?? 0),
     truncated: Boolean(payload.truncated),
-    content: String(payload.content ?? "")
+    content: String(payload.content ?? ""),
+    related_files: Array.isArray(payload.related_files) ? payload.related_files : []
   };
 }
 
@@ -1950,46 +2778,134 @@ function buildWorkbenchFileFromToolResult(
     return null;
   }
 
-  return {
-    workspace_id: workspaceId,
-    root_label: "Workspace",
-    relative_path: result.relative_path,
+    return {
+      workspace_id: workspaceId,
+      root_label: "Workspace",
+      relative_path: result.relative_path,
     name: typeof result.name === "string" ? result.name : result.relative_path.split("/").pop() ?? result.relative_path,
     extension: typeof result.extension === "string" ? result.extension : null,
-    size_bytes:
-      typeof result.size_bytes === "number"
-        ? result.size_bytes
-        : typeof result.size_bytes === "string"
-          ? Number(result.size_bytes)
-          : 0,
-    truncated: Boolean(result.truncated),
-    content: typeof result.content === "string" ? result.content : ""
-  };
+      size_bytes:
+        typeof result.size_bytes === "number"
+          ? result.size_bytes
+          : typeof result.size_bytes === "string"
+            ? Number(result.size_bytes)
+            : 0,
+      truncated: Boolean(result.truncated),
+      content: typeof result.content === "string" ? result.content : "",
+      related_files: Array.isArray(result.related_files) ? result.related_files : []
+    };
+  }
+
+function looksLikeBrowserExecutionPrompt(value: string) {
+  const lowered = value.toLowerCase();
+  const hasAddress = /(https?:\/\/|www\.|\b[a-z0-9-]+\.[a-z]{2,}\b)/i.test(lowered);
+  const hasIntent =
+    /(?:^|\b)(open|show|visit|go to|navigate|login|log in|sign in|credentials|email:|password|pw:)/i.test(
+      lowered
+    );
+  return hasAddress && hasIntent;
+}
+
+function extractBrowserTargetFromPrompt(value: string) {
+  const match = value.match(/(https?:\/\/[^\s,;]+|www\.[^\s,;]+|\b[a-z0-9-]+\.[a-z]{2,}(?:\/[^\s,;]*)?)/i);
+  if (!match) {
+    return null;
+  }
+  const candidate = match[1];
+  if (/^https?:\/\//i.test(candidate)) {
+    return candidate;
+  }
+  return `https://${candidate}`;
+}
+
+function humanizeLiveObjective(objective: string | null | undefined) {
+  const text = (objective ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  const lowered = text.toLowerCase();
+  if (lowered.startsWith("synthesize prior work into a polished deliverable")) {
+    return "Preparing the result for you.";
+  }
+  if (lowered.startsWith("collect grounded evidence")) {
+    return "Gathering the information needed to answer clearly.";
+  }
+  if (lowered.startsWith("answer the factual question quickly")) {
+    return "Searching reliable sources and preparing a short answer.";
+  }
+  if (lowered.startsWith("turn raw evidence into decisions")) {
+    return "Analyzing the best answer and the key tradeoffs.";
+  }
+  if (lowered.startsWith("design or implement the technical solution")) {
+    return "Working through the technical implementation.";
+  }
+  if (lowered.startsWith("execute browser or ui workflows")) {
+    return "Working through the browser task.";
+  }
+  if (lowered.startsWith("present the work as a clear final deliverable")) {
+    return "Turning the result into a clear final answer.";
+  }
+  return text;
+}
+
+function filterMessagesForThread(messages: Message[], threadId: string | null) {
+  if (!threadId) {
+    return messages;
+  }
+  return messages.filter((message) => !message.thread_id || message.thread_id === threadId);
+}
+
+function filterRunsForThread(runs: ChatRun[], threadId: string | null) {
+  if (!threadId) {
+    return runs;
+  }
+  return runs.filter((run) => run.thread_id === threadId);
+}
+
+function filterRunStepsForRuns(runSteps: RunStepRecord[], runs: ChatRun[]) {
+  const allowedRunIds = new Set(runs.map((run) => run.id).filter(Boolean));
+  if (allowedRunIds.size === 0) {
+    return [];
+  }
+  return runSteps.filter((step) => allowedRunIds.has(step.run_id));
 }
 
 export function ChatWorkspace({
   data,
   initialWorkbenchTree,
   initialWorkbenchFile,
-  taskTemplates = []
+  taskTemplates = [],
+  chatAgents
 }: {
   data: ChatWorkspaceData;
   initialWorkbenchTree?: ChatWorkbenchTreeData | null;
   initialWorkbenchFile?: ChatWorkbenchFileData | null;
   taskTemplates?: TaskTemplate[];
+  chatAgents?: ChatAgentsData;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const initialSelectedThreadId = data.selected_thread_id ?? data.threads[0]?.id ?? null;
+  const initialScopedMessages = filterMessagesForThread(data.messages, initialSelectedThreadId);
+  const initialScopedRuns = filterRunsForThread(data.runs, initialSelectedThreadId);
+  const initialScopedRunSteps = filterRunStepsForRuns(data.run_steps ?? [], initialScopedRuns);
+  const initialRunStepById = new Map(initialScopedRunSteps.map((step) => [step.id, step]));
+  const initialScopedToolCalls = filterToolCallsForRun(
+    data.tool_calls ?? [],
+    initialRunStepById,
+    initialScopedRuns[0]?.id ?? null
+  );
+  const modelProfileOptions = useMemo(() => buildModelProfileOptions(chatAgents), [chatAgents]);
   const [threads, setThreads] = useState(data.threads);
   const [selectedProject, setSelectedProject] = useState(data.selected_project ?? null);
   const [taskMemory, setTaskMemory] = useState<SharedMemory | null>(data.task_memory ?? null);
   const [projectMemory, setProjectMemory] = useState<SharedMemory | null>(data.project_memory ?? null);
   const [liveApprovalRequests, setLiveApprovalRequests] = useState<ApprovalRequest[]>([]);
-  const [messages, setMessages] = useState(data.messages);
-  const [runs, setRuns] = useState(data.runs);
-  const [runSteps, setRunSteps] = useState(data.run_steps ?? []);
-  const [toolCalls, setToolCalls] = useState(data.tool_calls ?? []);
+  const [messages, setMessages] = useState(initialScopedMessages);
+  const [runs, setRuns] = useState(initialScopedRuns);
+  const [runSteps, setRunSteps] = useState(initialScopedRunSteps);
+  const [toolCalls, setToolCalls] = useState(initialScopedToolCalls);
   const [draft, setDraft] = useState("");
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const [selectedComposerShortcutKeys, setSelectedComposerShortcutKeys] = useState<string[]>([]);
@@ -2010,6 +2926,18 @@ export function ChatWorkspace({
       data.threads.find((thread) => thread.id === data.selected_thread_id) ?? data.threads[0] ?? null;
     const metadata = isRecord(selectedThread?.metadata) ? selectedThread.metadata : {};
     return typeof metadata.selected_template_key === "string" ? metadata.selected_template_key : null;
+  });
+  const [autonomyModeDraft, setAutonomyModeDraft] = useState<AutonomyMode>(() => {
+    const selectedThread =
+      data.threads.find((thread) => thread.id === data.selected_thread_id) ?? data.threads[0] ?? null;
+    const metadata = isRecord(selectedThread?.metadata) ? selectedThread.metadata : {};
+    return normalizeAutonomyMode(metadata.autonomy_mode);
+  });
+  const [executionEnvironmentDraft, setExecutionEnvironmentDraft] = useState<ExecutionEnvironmentRequest | null>(() => {
+    const selectedThread =
+      data.threads.find((thread) => thread.id === data.selected_thread_id) ?? data.threads[0] ?? null;
+    const metadata = isRecord(selectedThread?.metadata) ? selectedThread.metadata : {};
+    return normalizeExecutionEnvironment(metadata.execution_environment);
   });
   const [templateNotice, setTemplateNotice] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -2073,11 +3001,13 @@ export function ChatWorkspace({
   const [headerPanel, setHeaderPanel] = useState<HeaderPanel>(null);
   const [headerActionLoading, setHeaderActionLoading] = useState<string | null>(null);
   const [approvalActionLoading, setApprovalActionLoading] = useState<string | null>(null);
+  const [takeoverNotes, setTakeoverNotes] = useState<Record<string, string>>({});
   const [headerError, setHeaderError] = useState<string | null>(null);
   const [headerNotice, setHeaderNotice] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
   const [threadTitleDraft, setThreadTitleDraft] = useState("");
   const [threadStatusDraft, setThreadStatusDraft] = useState("active");
+  const [taskBriefDraft, setTaskBriefDraft] = useState("");
   const [isDesktopWorkspace, setIsDesktopWorkspace] = useState(false);
   const [workspacePaneWidth, setWorkspacePaneWidth] = useState(DEFAULT_WORKSPACE_SPLIT);
   const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
@@ -2085,9 +3015,7 @@ export function ChatWorkspace({
   const [workbenchExpanded, setWorkbenchExpanded] = useState(false);
   const [workbenchAutoFollow, setWorkbenchAutoFollow] = useState(true);
   const [isResizingWorkspace, setIsResizingWorkspace] = useState(false);
-  const [currentThreadId, setCurrentThreadId] = useState<string | null>(
-    data.selected_thread_id ?? data.threads[0]?.id ?? null
-  );
+  const [currentThreadId, setCurrentThreadId] = useState<string | null>(initialSelectedThreadId);
   const workspaceShellRef = useRef<HTMLElement | null>(null);
   const composerFileInputRef = useRef<HTMLInputElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -2096,39 +3024,114 @@ export function ChatWorkspace({
   const autoCreateMarker = useRef<string | null>(null);
   const terminalOutputRef = useRef<HTMLDivElement | null>(null);
   const repoRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workspaceRefreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const workspaceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const browserAutofocusSignatureRef = useRef<string | null>(null);
+  const pendingThreadUrlSyncRef = useRef<string | null>(null);
+  const hydratedWorkspaceSignatureRef = useRef<string | null>(null);
+  const pendingRunSyncIdRef = useRef<string | null>(null);
+  const pendingRunSyncThreadIdRef = useRef<string | null>(null);
+  const liveStreamActiveRef = useRef(false);
+  const replayRequestRef = useRef<string | null>(null);
+  const syncThreadInUrlRef = useRef<((threadId: string | null) => void) | null>(null);
+  const submitRunMessageRef = useRef<((messageInput: string) => Promise<void>) | null>(null);
   const createThreadActionRef = useRef<(() => Promise<void>) | null>(null);
   const fetchWorkbenchDirectoryRef = useRef<((relativePath?: string, options?: { force?: boolean }) => Promise<ChatWorkbenchTreeData | null>) | null>(null);
   const fetchWorkbenchRepoStateRef = useRef<((options?: { force?: boolean }) => Promise<ChatWorkbenchRepoData | null>) | null>(null);
   const openWorkbenchFileRef = useRef<((relativePath: string) => Promise<void>) | null>(null);
   const searchParamKey = searchParams.toString();
   const wantsNewTask = searchParams.get("new") === "1";
+  const wantsReplay = searchParams.get("replay") === "1";
   const workspaceId = data.workspace_id;
   const currentProjectId = searchParams.get("project");
   const prefersReducedMotion = useReducedMotion();
 
   useEffect(() => {
     if (wantsNewTask) {
+      hydratedWorkspaceSignatureRef.current = null;
+      return;
+    }
+    if (liveStreamActiveRef.current) {
+      return;
+    }
+    if (running) {
       return;
     }
 
     const nextSelectedThread =
       data.threads.find((thread) => thread.id === data.selected_thread_id) ?? data.threads[0] ?? null;
     const nextSelectedThreadMetadata = isRecord(nextSelectedThread?.metadata) ? nextSelectedThread.metadata : {};
+    const nextSelectedThreadId = nextSelectedThread?.id ?? null;
+    const nextMessages = filterMessagesForThread(data.messages, nextSelectedThreadId);
+    const nextRuns = filterRunsForThread(data.runs, nextSelectedThreadId);
+    const nextRunSteps = filterRunStepsForRuns(data.run_steps ?? [], nextRuns);
+    const nextRunStepById = new Map(nextRunSteps.map((step) => [step.id, step]));
+    const nextLatestRunId = nextRuns[0]?.id ?? null;
+    const nextToolCalls = data.tool_calls ?? [];
+    const nextScopedToolCalls = filterToolCallsForRun(nextToolCalls, nextRunStepById, nextLatestRunId);
+    const nextWorkspaceSignature = JSON.stringify({
+      selected_thread_id: nextSelectedThreadId,
+      thread_ids: data.threads.map((thread) => thread.id),
+      message_ids: nextMessages.map((message) => message.id),
+      run_keys: nextRuns.map((run) => `${run.id}:${run.status}`),
+      run_step_ids: nextRunSteps.map((step) => step.id),
+      tool_call_ids: nextScopedToolCalls.map((toolCall) => toolCall.id),
+      initial_tree_path: initialWorkbenchTree?.relative_path ?? null,
+      initial_file_path: initialWorkbenchFile?.relative_path ?? null
+    });
+    if (hydratedWorkspaceSignatureRef.current === nextWorkspaceSignature) {
+      return;
+    }
+    hydratedWorkspaceSignatureRef.current = nextWorkspaceSignature;
+
+    const nextPersistedSessions = nextScopedToolCalls
+      .flatMap((toolCall) => {
+        const sessionsForToolCall: ComputerSession[] = [];
+        const browserSession = buildBrowserSessionFromToolCall(toolCall);
+        if (browserSession) {
+          sessionsForToolCall.push(browserSession);
+        }
+        const terminalSession = buildTerminalSessionFromToolCall(toolCall);
+        if (terminalSession) {
+          sessionsForToolCall.push(terminalSession);
+        }
+        return sessionsForToolCall;
+      })
+      .sort(sessionSort);
+    const nextBrowserSession =
+      nextPersistedSessions.find((session) => session.session_kind === "browser") ?? null;
+    const nextTerminalSession =
+      nextPersistedSessions.find((session) => session.session_kind === "terminal") ?? null;
+    const nextPreviewArtifacts = previewableArtifacts(
+      dedupeArtifacts([
+        ...(nextBrowserSession?.artifacts ?? []),
+        ...(nextTerminalSession?.artifacts ?? []),
+        ...nextScopedToolCalls.flatMap((toolCall) => extractArtifactsFromToolResult(toolCall.output_payload))
+      ])
+    );
+    const nextPreferredPreview =
+      (nextBrowserSession
+        ? browserScreenshotArtifact(nextBrowserSession) ?? browserHtmlArtifact(nextBrowserSession)
+        : null) ??
+      nextPreviewArtifacts[0] ??
+      null;
 
     setThreads(data.threads);
     setSelectedProject(data.selected_project ?? null);
     setTaskMemory(data.task_memory ?? null);
     setProjectMemory(data.project_memory ?? null);
     setLiveApprovalRequests([]);
-    setMessages(data.messages);
-    setRuns(data.runs);
-    setRunSteps(data.run_steps ?? []);
-    setToolCalls(data.tool_calls ?? []);
+    setMessages(nextMessages);
+    setRuns(nextRuns);
+    setRunSteps(nextRunSteps);
+    setToolCalls(nextScopedToolCalls);
     setSelectedTaskTemplateKey(
       typeof nextSelectedThreadMetadata.selected_template_key === "string"
         ? nextSelectedThreadMetadata.selected_template_key
         : null
     );
+    setAutonomyModeDraft(normalizeAutonomyMode(nextSelectedThreadMetadata.autonomy_mode));
+    setExecutionEnvironmentDraft(normalizeExecutionEnvironment(nextSelectedThreadMetadata.execution_environment));
     setTemplateNotice(null);
     setRunning(false);
     setLoadingThread(false);
@@ -2141,13 +3144,16 @@ export function ChatWorkspace({
     setLiveSessions({});
     setLiveArtifacts([]);
     setLiveWorkbenchActivities([]);
-    setSelectedBrowserSessionId(null);
-    setSelectedTerminalSessionId(null);
-    setSelectedPreviewStorageKey(null);
+    setSelectedBrowserSessionId(nextBrowserSession?.session_id ?? null);
+    setSelectedTerminalSessionId(nextTerminalSession?.session_id ?? null);
+    setSelectedPreviewStorageKey(nextPreferredPreview?.storage_key ?? null);
     setTerminalStreamMode("combined");
     setTerminalFollowOutput(true);
     setComputerNotice(null);
     setComputerError(null);
+    browserAutofocusSignatureRef.current = nextBrowserSession
+      ? `${nextBrowserSession.session_id}:${nextPreferredPreview?.storage_key ?? "none"}`
+      : null;
     setWorkbenchTree(initialWorkbenchTree ? { [initialWorkbenchTree.relative_path]: initialWorkbenchTree } : {});
     setExpandedDirectories({
       [initialWorkbenchTree?.relative_path ?? "."]: true
@@ -2185,8 +3191,18 @@ export function ChatWorkspace({
     setInviteEmail("");
     setThreadTitleDraft(nextSelectedThread?.title ?? "");
     setThreadStatusDraft(nextSelectedThread?.status ?? "active");
-    setCurrentThreadId(data.selected_thread_id ?? data.threads[0]?.id ?? null);
-  }, [data, initialWorkbenchFile, initialWorkbenchTree, wantsNewTask]);
+    setTaskBriefDraft(
+      typeof nextSelectedThreadMetadata.task_brief === "string" ? nextSelectedThreadMetadata.task_brief : ""
+    );
+    setCurrentThreadId(nextSelectedThreadId);
+    if (nextPreferredPreview) {
+      setOperatorTab("preview");
+    } else if (nextBrowserSession) {
+      setOperatorTab("browser");
+    } else if (nextTerminalSession) {
+      setOperatorTab("terminal");
+    }
+  }, [data, initialWorkbenchFile, initialWorkbenchTree, wantsNewTask, running]);
 
   const displayedPlan = useMemo(() => {
     if (livePlan.length > 0) {
@@ -2196,7 +3212,6 @@ export function ChatWorkspace({
   }, [livePlan, runs]);
 
   const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
-  const latestRun = runs[0] ?? null;
   const activeThread = useMemo(() => {
     if (currentThreadId) {
       return threads.find((thread) => thread.id === currentThreadId) ?? null;
@@ -2207,8 +3222,17 @@ export function ChatWorkspace({
     return threads[0] ?? null;
   }, [currentProjectId, currentThreadId, threads]);
   const activeThreadMetadata = isRecord(activeThread?.metadata) ? activeThread.metadata : {};
+  const activeThreadReplayMessage = useMemo(
+    () =>
+      [...messages]
+        .reverse()
+        .find((message) => message.role === "user" && (!activeThread?.id || message.thread_id === activeThread.id)) ?? null,
+    [activeThread?.id, messages]
+  );
+  const activeThreadReplayPrompt = activeThreadReplayMessage?.content.trim() || null;
   const activeThreadTitle = activeThread?.title ?? "";
   const activeThreadStatus = activeThread?.status ?? "active";
+  const activeTaskBrief = typeof activeThreadMetadata.task_brief === "string" ? activeThreadMetadata.task_brief : "";
   const activeThreadSelectedTemplateKey =
     typeof activeThreadMetadata.selected_template_key === "string"
       ? activeThreadMetadata.selected_template_key
@@ -2241,12 +3265,27 @@ export function ChatWorkspace({
     [activeProjectMemory]
   );
   const selectedModelProfile =
-    typeof activeThreadMetadata.model_profile === "string"
+    typeof activeThreadMetadata.model_profile === "string" &&
+    modelProfileOptions.some((option) => option.value === activeThreadMetadata.model_profile)
       ? activeThreadMetadata.model_profile
-      : MODEL_PROFILE_OPTIONS[0].value;
+      : modelProfileOptions.find((option) => option.value === chatAgents?.supervisor_model)?.value ??
+        modelProfileOptions.find((option) => option.configured)?.value ??
+        modelProfileOptions[0]?.value ??
+        "qwen3.5-flash";
+  const selectedModelOption =
+    modelProfileOptions.find((option) => option.value === selectedModelProfile) ?? null;
+  const activeAutonomyMode = normalizeAutonomyMode(activeThreadMetadata.autonomy_mode);
+  const activeExecutionEnvironment = useMemo(
+    () => normalizeExecutionEnvironment(activeThreadMetadata.execution_environment),
+    [activeThreadMetadata.execution_environment]
+  );
   const selectedTaskTemplate = useMemo(
     () => taskTemplates.find((template) => template.key === selectedTaskTemplateKey) ?? null,
     [selectedTaskTemplateKey, taskTemplates]
+  );
+  const premiumTaskTemplates = useMemo(
+    () => taskTemplates.filter((template) => PREMIUM_TEMPLATE_KEYS.has(template.key)),
+    [taskTemplates]
   );
   const selectedComposerShortcuts = useMemo(
     () =>
@@ -2265,14 +3304,20 @@ export function ChatWorkspace({
     () => Object.fromEntries(liveSteps.map((step) => [step.agent_key, step])),
     [liveSteps]
   );
+  const latestRun = runs[0] ?? null;
+  const latestRunId = latestRun?.id ?? null;
   const runStepById = useMemo(
     () => new Map(runSteps.map((step) => [step.id, step])),
     [runSteps]
   );
+  const scopedPersistedToolCalls = useMemo(
+    () => filterToolCallsForRun(toolCalls, runStepById, latestRunId),
+    [latestRunId, runStepById, toolCalls]
+  );
 
   const persistedSessions = useMemo(() => {
     const sessions: ComputerSession[] = [];
-    for (const toolCall of toolCalls) {
+    for (const toolCall of scopedPersistedToolCalls) {
       const browserSession = buildBrowserSessionFromToolCall(toolCall);
       if (browserSession) {
         sessions.push(browserSession);
@@ -2283,26 +3328,26 @@ export function ChatWorkspace({
       }
     }
     return sessions.sort(sessionSort);
-  }, [toolCalls]);
+  }, [scopedPersistedToolCalls]);
 
   const persistedTimeline = useMemo(
-    () => toolCalls.map((toolCall) => persistedTimelineEntry(toolCall, runStepById)).sort(timelineSort),
-    [runStepById, toolCalls]
+    () => scopedPersistedToolCalls.map((toolCall) => persistedTimelineEntry(toolCall, runStepById)).sort(timelineSort),
+    [runStepById, scopedPersistedToolCalls]
   );
 
   const persistedArtifacts = useMemo(
     () =>
       dedupeArtifacts(
-        toolCalls.flatMap((toolCall) => extractArtifactsFromToolResult(toolCall.output_payload))
+        scopedPersistedToolCalls.flatMap((toolCall) => extractArtifactsFromToolResult(toolCall.output_payload))
       ),
-    [toolCalls]
+    [scopedPersistedToolCalls]
   );
   const persistedApprovalRequests = useMemo(
     () =>
-      toolCalls
+      scopedPersistedToolCalls
         .map((toolCall) => approvalRequestFromToolCall(toolCall, runStepById))
         .filter((item): item is ApprovalRequest => Boolean(item)),
-    [runStepById, toolCalls]
+    [runStepById, scopedPersistedToolCalls]
   );
   const pendingApprovalRequests = useMemo(() => {
     const merged = [...liveApprovalRequests, ...persistedApprovalRequests];
@@ -2319,6 +3364,10 @@ export function ChatWorkspace({
     }
     return deduped.slice(0, 6);
   }, [approvalResolutionMap, liveApprovalRequests, persistedApprovalRequests]);
+  const browserTakeoverRequest = useMemo(
+    () => pendingApprovalRequests.find((request) => request.kind === "browser_takeover") ?? null,
+    [pendingApprovalRequests]
+  );
 
   const mergedTimeline = useMemo(
     () => [...liveTimeline, ...persistedTimeline].sort(timelineSort),
@@ -2357,10 +3406,37 @@ export function ChatWorkspace({
     [computerSessions]
   );
   const browserSession = useMemo(
-    () =>
-      browserSessions.find((session) => session.session_id === selectedBrowserSessionId) ??
-      browserSessions[0] ??
-      null,
+    () => {
+      const selected =
+        browserSessions.find((session) => session.session_id === selectedBrowserSessionId) ?? null;
+      if (
+        selected &&
+        (selected.session_id !== OPTIMISTIC_BROWSER_SESSION_ID ||
+          (selected.artifacts?.length ?? 0) > 0 ||
+          Boolean(selected.final_url) ||
+          Boolean(selected.page_title) ||
+          (selected.executed_actions?.length ?? 0) > 0)
+      ) {
+        return selected;
+      }
+
+      const preferredRealSession =
+        browserSessions.find(
+          (session) =>
+            session.session_id !== OPTIMISTIC_BROWSER_SESSION_ID &&
+            (
+              (session.artifacts?.length ?? 0) > 0 ||
+              Boolean(session.final_url) ||
+              Boolean(session.page_title) ||
+              (session.executed_actions?.length ?? 0) > 0 ||
+              session.status !== "running"
+            )
+        ) ??
+        browserSessions.find((session) => session.session_id !== OPTIMISTIC_BROWSER_SESSION_ID) ??
+        null;
+
+      return preferredRealSession ?? selected ?? browserSessions[0] ?? null;
+    },
     [browserSessions, selectedBrowserSessionId]
   );
   const terminalSession = useMemo(
@@ -2413,9 +3489,29 @@ export function ChatWorkspace({
       ]),
     [browserArtifacts, mergedArtifacts, terminalArtifacts]
   );
+  const availablePreviewArtifacts = useMemo(
+    () => {
+      const sessionPreviewArtifacts = previewableArtifacts([
+        ...browserArtifacts,
+        ...terminalArtifacts
+      ]);
+      if (sessionPreviewArtifacts.length > 0) {
+        return sessionPreviewArtifacts;
+      }
+      if (previewArtifacts.length > 0) {
+        return previewArtifacts;
+      }
+      return dedupeArtifacts(
+        [selectedBrowserScreenshot, selectedBrowserHtml].filter(
+          (artifact): artifact is ToolArtifactRef => Boolean(artifact)
+        )
+      );
+    },
+    [browserArtifacts, previewArtifacts, selectedBrowserHtml, selectedBrowserScreenshot, terminalArtifacts]
+  );
   const selectedPreviewArtifact =
-    previewArtifacts.find((artifact) => artifact.storage_key === selectedPreviewStorageKey) ??
-    previewArtifacts[0] ??
+    availablePreviewArtifacts.find((artifact) => artifact.storage_key === selectedPreviewStorageKey) ??
+    availablePreviewArtifacts[0] ??
     null;
   const selectedPreviewMode = selectedPreviewArtifact ? artifactPreviewMode(selectedPreviewArtifact) : "none";
   const showComputerOverview = operatorTab === "computer";
@@ -2521,7 +3617,8 @@ export function ChatWorkspace({
     () => computerSessions.filter((session) => session.status === "running").length,
     [computerSessions]
   );
-  const deliverableCount = previewArtifacts.length > 0 ? previewArtifacts.length : mergedArtifacts.length;
+  const deliverableCount =
+    availablePreviewArtifacts.length > 0 ? availablePreviewArtifacts.length : mergedArtifacts.length;
   const activeChecklistItem =
     checklistItems.find((item) => ["running", "active", "in_progress"].includes(item.status)) ??
     checklistItems.find((item) => !item.completed) ??
@@ -2596,7 +3693,7 @@ export function ChatWorkspace({
     running ? "Live run" : null,
     browserSession ? `${browserSessions.length} browser` : null,
     terminalSession ? `${terminalSessions.length} terminal` : null,
-    selectedPreviewArtifact ? `${previewArtifacts.length} preview` : null,
+      selectedPreviewArtifact ? `${availablePreviewArtifacts.length} preview` : null,
     liveWorkbenchActivities.length > 0 ? `${liveWorkbenchActivities.length} file updates` : null
   ].filter((value): value is string => Boolean(value));
   const activeWorkbenchTabLabel =
@@ -2606,7 +3703,7 @@ export function ChatWorkspace({
     autonomyStateLabel,
     browserSessions.length > 0 ? `${browserSessions.length} browser` : null,
     terminalSessions.length > 0 ? `${terminalSessions.length} terminal` : null,
-    previewArtifacts.length > 0 ? `${previewArtifacts.length} preview` : null
+      availablePreviewArtifacts.length > 0 ? `${availablePreviewArtifacts.length} preview` : null
   ].filter((value): value is string => Boolean(value));
   const workbenchPrimaryViewportHeight = isWorkbenchFocusLayout ? "calc(100dvh - 8.75rem)" : "min(32dvh, 300px)";
   const workbenchSecondaryViewportHeight = isWorkbenchFocusLayout ? "calc(100dvh - 11.5rem)" : "min(16dvh, 168px)";
@@ -2615,7 +3712,7 @@ export function ChatWorkspace({
   const activeCommandElapsedLabel = formatElapsedLabel(activeCommandSession?.created_at ?? null, runClock);
   const liveRunObjective = running
     ? compactText(
-        activeLiveStep?.objective ||
+        humanizeLiveObjective(activeLiveStep?.objective) ||
           activeChecklistItem?.summary ||
           activeChecklistItem?.title ||
           activeLiveTool?.summary ||
@@ -2657,7 +3754,9 @@ export function ChatWorkspace({
     browserSession ? `${browserSessions.length} browser session${browserSessions.length === 1 ? "" : "s"}` : null,
     terminalSession ? `${terminalSessions.length} terminal session${terminalSessions.length === 1 ? "" : "s"}` : null,
     liveWorkbenchActivities.length > 0 ? `${liveWorkbenchActivities.length} tracked file update${liveWorkbenchActivities.length === 1 ? "" : "s"}` : null,
-    selectedPreviewArtifact ? `${previewArtifacts.length} preview artifact${previewArtifacts.length === 1 ? "" : "s"}` : null
+    selectedPreviewArtifact
+      ? `${availablePreviewArtifacts.length} preview artifact${availablePreviewArtifacts.length === 1 ? "" : "s"}`
+      : null
   ].filter((value): value is string => Boolean(value));
   const operatingFlowStages = useMemo(
     () =>
@@ -2819,14 +3918,49 @@ export function ChatWorkspace({
   function syncThreadInUrl(threadId: string | null) {
     const params = new URLSearchParams(searchParams.toString());
     params.delete("new");
+    params.delete("replay");
     if (threadId) {
       params.set("thread", threadId);
     } else {
       params.delete("thread");
     }
     const href = params.toString() ? `${pathname}?${params.toString()}` : pathname;
+    if (typeof window !== "undefined") {
+      window.history.replaceState(window.history.state, "", href);
+      return;
+    }
     router.replace(href, { scroll: false });
   }
+
+  function stopWorkspaceRefreshLoop() {
+    if (workspaceRefreshIntervalRef.current) {
+      clearInterval(workspaceRefreshIntervalRef.current);
+      workspaceRefreshIntervalRef.current = null;
+    }
+    if (workspaceRefreshTimeoutRef.current) {
+      clearTimeout(workspaceRefreshTimeoutRef.current);
+      workspaceRefreshTimeoutRef.current = null;
+    }
+  }
+
+  function startWorkspaceRefreshLoop(
+    threadId?: string | null,
+    options?: { immediate?: boolean; timeoutMs?: number }
+  ) {
+    stopWorkspaceRefreshLoop();
+    if (options?.immediate) {
+      void refreshWorkspace(threadId ?? null, { preserveLiveRuntime: true });
+    }
+    workspaceRefreshIntervalRef.current = setInterval(() => {
+      void refreshWorkspace(threadId ?? null, { preserveLiveRuntime: true });
+    }, 1800);
+    workspaceRefreshTimeoutRef.current = setTimeout(() => {
+      stopWorkspaceRefreshLoop();
+      void refreshWorkspace(threadId ?? null, { preserveLiveRuntime: true });
+    }, options?.timeoutMs ?? 60000);
+  }
+
+  useEffect(() => () => stopWorkspaceRefreshLoop(), []);
 
   function upsertWorkbenchEditor(
     file: ChatWorkbenchFileData,
@@ -3203,7 +4337,10 @@ export function ChatWorkspace({
     }
   }
 
-  async function refreshWorkspace(threadId?: string | null) {
+  async function refreshWorkspace(
+    threadId?: string | null,
+    options?: { preserveLiveRuntime?: boolean }
+  ) {
     const query = new URLSearchParams({ workspace_id: data.workspace_id });
     if (threadId) {
       query.set("thread_id", threadId);
@@ -3224,17 +4361,136 @@ export function ChatWorkspace({
         setLoadingThread(false);
         return;
       }
+      const nextToolCalls = payload.tool_calls ?? [];
+      const selectedThreadId = payload.selected_thread_id ?? threadId ?? null;
+      const nextMessages = filterMessagesForThread(payload.messages ?? [], selectedThreadId);
+      const nextRuns = filterRunsForThread(payload.runs ?? [], selectedThreadId);
+      const latestThreadRun = nextRuns[0] ?? null;
+      const nextRunSteps = filterRunStepsForRuns(payload.run_steps ?? [], nextRuns);
+      const nextRunStepById = new Map(nextRunSteps.map((step) => [step.id, step]));
+      const nextScopedToolCalls = filterToolCallsForRun(nextToolCalls, nextRunStepById, latestThreadRun?.id ?? null);
+      const nextPersistedSessions = nextScopedToolCalls
+        .flatMap((toolCall) => {
+          const sessionsForToolCall: ComputerSession[] = [];
+          const browserSession = buildBrowserSessionFromToolCall(toolCall);
+          if (browserSession) {
+            sessionsForToolCall.push(browserSession);
+          }
+          const terminalSession = buildTerminalSessionFromToolCall(toolCall);
+          if (terminalSession) {
+            sessionsForToolCall.push(terminalSession);
+          }
+          return sessionsForToolCall;
+        })
+        .sort(sessionSort);
+      const nextBrowserSession =
+        nextPersistedSessions.find((session) => session.session_kind === "browser") ?? null;
+      const nextTerminalSession =
+        nextPersistedSessions.find((session) => session.session_kind === "terminal") ?? null;
+      const nextArtifacts = dedupeArtifacts([
+        ...(nextBrowserSession?.artifacts ?? []),
+        ...(nextTerminalSession?.artifacts ?? []),
+        ...nextScopedToolCalls.flatMap((toolCall) => extractArtifactsFromToolResult(toolCall.output_payload))
+      ]);
+      const nextPreviewArtifacts = previewableArtifacts(nextArtifacts);
+      const nextPreferredPreview =
+        (nextBrowserSession
+          ? browserScreenshotArtifact(nextBrowserSession) ?? browserHtmlArtifact(nextBrowserSession)
+          : null) ??
+        nextPreviewArtifacts[0] ??
+        null;
+      const preserveLiveRuntime = options?.preserveLiveRuntime === true;
+      const hasAssistantReply =
+        nextMessages.some(
+          (message) => message.role === "assistant" && (!selectedThreadId || message.thread_id === selectedThreadId)
+        ) ?? false;
+      const pendingRunId = pendingRunSyncIdRef.current;
+      const pendingThreadId = pendingRunSyncThreadIdRef.current;
+      const matchingPendingThread =
+        !pendingThreadId || !selectedThreadId || pendingThreadId === selectedThreadId;
+      const pendingRunVisible =
+        Boolean(
+          pendingRunId &&
+            matchingPendingThread &&
+            latestThreadRun?.id === pendingRunId
+        );
+      const pendingRunReady =
+        pendingRunVisible &&
+        (hasAssistantReply ||
+          nextScopedToolCalls.length > 0 ||
+          nextPersistedSessions.length > 0 ||
+          isTerminalRunStatus(latestThreadRun?.status ?? ""));
       setThreads(payload.threads ?? []);
       setSelectedProject(payload.selected_project ?? null);
       setTaskMemory(payload.task_memory ?? null);
       setProjectMemory(payload.project_memory ?? null);
-      setMessages(payload.messages ?? []);
-      setRuns(payload.runs ?? []);
-      setRunSteps(payload.run_steps ?? []);
-      setToolCalls(payload.tool_calls ?? []);
-      const selectedThreadId = payload.selected_thread_id ?? threadId ?? null;
+      setMessages(nextMessages);
+      setRuns(nextRuns);
+      setRunSteps(nextRunSteps);
+      setToolCalls(nextToolCalls);
+      setLiveSessions((current) => {
+        if (preserveLiveRuntime && nextPersistedSessions.length === 0 && Object.keys(current).length > 0) {
+          return current;
+        }
+        return nextPersistedSessions.reduce<Record<string, ComputerSession>>((accumulator, session) => {
+          accumulator[session.session_id] = session;
+          return accumulator;
+        }, {});
+      });
+      setLiveArtifacts((current) =>
+        preserveLiveRuntime && nextArtifacts.length === 0 && current.length > 0 ? current : nextArtifacts
+      );
+      setSelectedBrowserSessionId((current) => nextBrowserSession?.session_id ?? (preserveLiveRuntime ? current : null));
+      setSelectedTerminalSessionId((current) =>
+        nextTerminalSession?.session_id ?? (preserveLiveRuntime ? current : null)
+      );
+      setSelectedPreviewStorageKey((current) =>
+        nextPreferredPreview?.storage_key ?? (preserveLiveRuntime ? current : null)
+      );
+      if (nextBrowserSession || nextPreferredPreview) {
+        browserAutofocusSignatureRef.current = nextBrowserSession
+          ? `${nextBrowserSession.session_id}:${nextPreferredPreview?.storage_key ?? "none"}`
+          : null;
+      }
+      setOperatorTab((current) => {
+        if (nextPreferredPreview) {
+          return "preview";
+        }
+        if (nextBrowserSession) {
+          return "browser";
+        }
+        if (nextTerminalSession) {
+          return "terminal";
+        }
+        return current;
+      });
       setCurrentThreadId(selectedThreadId);
-      syncThreadInUrl(selectedThreadId);
+      if (preserveLiveRuntime && running) {
+        pendingThreadUrlSyncRef.current = selectedThreadId;
+      } else {
+        syncThreadInUrl(selectedThreadId);
+      }
+      if (preserveLiveRuntime) {
+        if (pendingRunReady || (!pendingRunId && latestThreadRun && isTerminalRunStatus(latestThreadRun.status))) {
+          setRunning(false);
+          setCurrentRunStartedAt(null);
+          stopWorkspaceRefreshLoop();
+          pendingRunSyncIdRef.current = null;
+          pendingRunSyncThreadIdRef.current = null;
+          if (pendingThreadUrlSyncRef.current) {
+            syncThreadInUrl(pendingThreadUrlSyncRef.current);
+            pendingThreadUrlSyncRef.current = null;
+          }
+        } else if (
+          latestThreadRun ||
+          nextPersistedSessions.length > 0 ||
+          nextScopedToolCalls.length > 0 ||
+          hasAssistantReply ||
+          Boolean(pendingRunId)
+        ) {
+          setRunning(true);
+        }
+      }
       setError(null);
     } catch {
       setError("Workspace refresh is unavailable.");
@@ -3281,7 +4537,8 @@ export function ChatWorkspace({
         extension: payload.file.extension ?? null,
         size_bytes: Number(payload.file.size_bytes ?? 0),
         truncated: Boolean(payload.file.truncated),
-        content: String(payload.file.content ?? "")
+        content: String(payload.file.content ?? ""),
+        related_files: Array.isArray(payload.file.related_files) ? payload.file.related_files : []
       };
       upsertWorkbenchEditor(syncedFile, { activate: true });
       setOperatorTab("code");
@@ -3374,6 +4631,70 @@ export function ChatWorkspace({
     }
   }
 
+  function startBrowserTakeover(request: ApprovalRequest) {
+    activateOperatorTab("browser");
+    if (request.targetLabel) {
+      window.open(request.targetLabel, "_blank", "noopener,noreferrer");
+    }
+    setHeaderError(null);
+    setHeaderNotice(
+      "Take over the blocked browser step in the opened page, then tell the agent what you did so it can continue."
+    );
+  }
+
+  async function resumeBrowserTakeover(request: ApprovalRequest) {
+    if (!activeThread?.id) {
+      return;
+    }
+    if (isTaskPaused) {
+      setError("This task is paused. Resume it before handing control back to the agent.");
+      return;
+    }
+    const note = (takeoverNotes[request.id] ?? "").trim();
+    if (!note) {
+      setHeaderError("Add a short note describing what you did before handing control back.");
+      return;
+    }
+    setApprovalActionLoading(request.id);
+    setHeaderError(null);
+    setHeaderNotice(null);
+    try {
+      const nextResolutions = [
+        ...approvalResolutions.filter((item) => item.approval_id !== request.id),
+        {
+          approval_id: request.id,
+          status: "approved" as const,
+          kind: request.kind,
+          title: request.title,
+          resolved_at: new Date().toISOString()
+        }
+      ];
+
+      await updateActiveThread({
+        metadata_updates: {
+          ...activeThreadMetadata,
+          approval_resolutions: nextResolutions
+        }
+      });
+      setLiveApprovalRequests((current) => current.filter((item) => item.id !== request.id));
+      setTakeoverNotes((current) => {
+        const next = { ...current };
+        delete next[request.id];
+        return next;
+      });
+      setHeaderNotice("Thanks. The agent is continuing from your browser handoff.");
+      await submitRunMessage(
+        `Manual browser takeover completed for ${request.targetLabel ?? "the blocked page"}. The human operator reports: ${note}. Continue the task from this updated context and proceed with the next steps.`
+      );
+    } catch (approvalError) {
+      setHeaderError(
+        approvalError instanceof Error ? approvalError.message : "Browser handoff resume failed."
+      );
+    } finally {
+      setApprovalActionLoading(null);
+    }
+  }
+
   async function approvePendingRequest(request: ApprovalRequest) {
     if (!activeThread?.id) {
       return;
@@ -3437,6 +4758,13 @@ export function ChatWorkspace({
           approval_resolutions: nextResolutions
         }
       });
+      if (request.kind === "browser_takeover") {
+        setTakeoverNotes((current) => {
+          const next = { ...current };
+          delete next[request.id];
+          return next;
+        });
+      }
       setHeaderNotice(`${request.title} remains blocked and can be approved later from this task.`);
     } catch (approvalError) {
       setHeaderError(approvalError instanceof Error ? approvalError.message : "Approval update failed.");
@@ -3460,8 +4788,12 @@ export function ChatWorkspace({
         }
       });
       const profileLabel =
-        MODEL_PROFILE_OPTIONS.find((option) => option.value === nextProfile)?.label ?? nextProfile;
-      setHeaderNotice(`Model profile updated to ${profileLabel}.`);
+        modelProfileOptions.find((option) => option.value === nextProfile)?.label ?? nextProfile;
+      setHeaderNotice(
+        nextProfile === "qwen3.5-flash"
+          ? "Auto swarm orchestration enabled for this task."
+          : `Task model updated to ${profileLabel}. The next run will use it.`
+      );
     } catch (updateError) {
       setHeaderError(updateError instanceof Error ? updateError.message : "Model profile update failed.");
     } finally {
@@ -3608,10 +4940,15 @@ export function ChatWorkspace({
         status: threadStatusDraft,
         metadata_updates: {
           ...activeThreadMetadata,
+          selected_template_key: selectedTaskTemplateKey,
+          autonomy_mode: autonomyModeDraft,
+          execution_environment: cleanExecutionEnvironment(executionEnvironmentDraft),
+          task_brief: taskBriefDraft.trim() || null,
+          task_brief_updated_at: new Date().toISOString(),
           share_enabled: shareEnabled
         }
       });
-      setHeaderNotice("Task settings saved.");
+      setHeaderNotice(taskBriefDraft.trim() ? "Task settings and task brief saved." : "Task settings saved.");
       setHeaderPanel(null);
     } catch (settingsError) {
       setHeaderError(settingsError instanceof Error ? settingsError.message : "Task settings update failed.");
@@ -3837,16 +5174,53 @@ export function ChatWorkspace({
   }, [terminalSessions]);
 
   useEffect(() => {
-    if (!previewArtifacts.length) {
+    if (!availablePreviewArtifacts.length) {
       setSelectedPreviewStorageKey(null);
       return;
     }
     setSelectedPreviewStorageKey((current) =>
-      current && previewArtifacts.some((artifact) => artifact.storage_key === current)
+      current && availablePreviewArtifacts.some((artifact) => artifact.storage_key === current)
         ? current
-        : previewArtifacts[0].storage_key
+        : availablePreviewArtifacts[0].storage_key
     );
-  }, [previewArtifacts]);
+  }, [availablePreviewArtifacts]);
+
+  useEffect(() => {
+    if (!browserSession) {
+      return;
+    }
+
+    const preferredBrowserPreview =
+      browserScreenshotArtifact(browserSession) ?? browserHtmlArtifact(browserSession);
+    const signature = `${browserSession.session_id}:${preferredBrowserPreview?.storage_key ?? "none"}`;
+
+    if (browserAutofocusSignatureRef.current === signature) {
+      return;
+    }
+
+    browserAutofocusSignatureRef.current = signature;
+
+    if (preferredBrowserPreview) {
+      setSelectedPreviewStorageKey((current) =>
+        current && availablePreviewArtifacts.some((artifact) => artifact.storage_key === current)
+          ? current
+          : preferredBrowserPreview.storage_key
+      );
+      setOperatorTab("preview");
+      return;
+    }
+
+    if (workbenchAutoFollow || operatorTab === "code" || operatorTab === "computer") {
+      setOperatorTab("browser");
+    }
+  }, [availablePreviewArtifacts, browserSession, operatorTab, workbenchAutoFollow]);
+
+  useEffect(() => {
+    if (operatorTab !== "preview" || selectedPreviewArtifact || !browserSession) {
+      return;
+    }
+    setOperatorTab("browser");
+  }, [browserSession, operatorTab, selectedPreviewArtifact]);
 
   useEffect(() => {
     if (!workbenchAutoFollow) {
@@ -3945,6 +5319,7 @@ export function ChatWorkspace({
     setSelectedBrowserSessionId(null);
     setSelectedTerminalSessionId(null);
     setSelectedPreviewStorageKey(null);
+    browserAutofocusSignatureRef.current = null;
   }, [currentThreadId]);
 
   useEffect(() => {
@@ -3958,13 +5333,24 @@ export function ChatWorkspace({
   useEffect(() => {
     setThreadTitleDraft(activeThreadTitle);
     setThreadStatusDraft(activeThreadStatus);
+    setTaskBriefDraft(activeTaskBrief);
     setInviteEmail("");
     setSelectedTaskTemplateKey(activeThreadSelectedTemplateKey);
+    setAutonomyModeDraft(activeAutonomyMode);
+    setExecutionEnvironmentDraft(activeExecutionEnvironment);
     setTemplateNotice(null);
     setHeaderError(null);
     setHeaderNotice(null);
     setHeaderPanel(null);
-  }, [activeThread?.id, activeThreadSelectedTemplateKey, activeThreadStatus, activeThreadTitle]);
+  }, [
+    activeAutonomyMode,
+    activeExecutionEnvironment,
+    activeTaskBrief,
+    activeThread?.id,
+    activeThreadSelectedTemplateKey,
+    activeThreadStatus,
+    activeThreadTitle
+  ]);
 
   async function createThread() {
     if (running) {
@@ -4086,19 +5472,102 @@ export function ChatWorkspace({
     }
   }
 
-  function applyTaskTemplate(template: TaskTemplate) {
+  function updateExecutionEnvironmentField<K extends keyof ExecutionEnvironmentRequest>(
+    key: K,
+    value: ExecutionEnvironmentRequest[K] | undefined
+  ) {
+    setExecutionEnvironmentDraft((current) => {
+      const next: Record<string, unknown> = { ...(current ?? {}) };
+      const isEmptyString = typeof value === "string" && value.trim().length === 0;
+      if (value === undefined || value === null || isEmptyString) {
+        delete next[key];
+      } else {
+        next[key] = value;
+      }
+      return cleanExecutionEnvironment(next as ExecutionEnvironmentRequest);
+    });
+  }
+
+  async function persistTaskControls(
+    nextTemplateKey: string | null,
+    nextAutonomyMode: AutonomyMode,
+    nextEnvironment: ExecutionEnvironmentRequest | null,
+    successMessage: string
+  ) {
+    if (!activeThread?.id) {
+      setTemplateNotice(successMessage);
+      return;
+    }
+
+    setHeaderActionLoading("controls");
+    setHeaderError(null);
+    setHeaderNotice(null);
+    try {
+      await updateActiveThread({
+        metadata_updates: {
+          ...activeThreadMetadata,
+          selected_template_key: nextTemplateKey,
+          autonomy_mode: nextAutonomyMode,
+          execution_environment: cleanExecutionEnvironment(nextEnvironment)
+        }
+      });
+      setHeaderNotice(successMessage);
+    } catch (controlError) {
+      setHeaderError(
+        controlError instanceof Error ? controlError.message : "Task controls could not be saved."
+      );
+    } finally {
+      setHeaderActionLoading(null);
+    }
+  }
+
+  async function saveExecutionEnvironmentControls() {
+    await persistTaskControls(
+      selectedTaskTemplateKey,
+      autonomyModeDraft,
+      executionEnvironmentDraft,
+      "Execution environment saved for this task."
+    );
+  }
+
+  async function saveAutonomyModeControls() {
+    await persistTaskControls(
+      selectedTaskTemplateKey,
+      autonomyModeDraft,
+      executionEnvironmentDraft,
+      "Autonomy mode saved for this task."
+    );
+  }
+
+  async function applyTaskTemplate(template: TaskTemplate) {
+    const nextEnvironment =
+      cleanExecutionEnvironment(PREMIUM_TEMPLATE_ENVIRONMENT_PRESETS[template.key]) ??
+      executionEnvironmentDraft;
     setSelectedTaskTemplateKey(template.key);
+    setExecutionEnvironmentDraft(nextEnvironment);
     setDraft(template.chat_defaults.prompt);
     setTemplateNotice(
-      `${template.name} loaded. We prefilled the task brief and switched the operator pane toward the recommended workflow.`
+      `${template.name} loaded. We prefilled the task brief, set the recommended operator focus, and prepared its execution profile.`
     );
     setOperatorTab(template.recommended_operator_tab);
     setError(null);
+    await persistTaskControls(
+      template.key,
+      autonomyModeDraft,
+      nextEnvironment,
+      `${template.name} is now the active premium mode for this task.`
+    );
   }
 
-  function clearTaskTemplate() {
+  async function clearTaskTemplate() {
     setSelectedTaskTemplateKey(null);
     setTemplateNotice(null);
+    await persistTaskControls(
+      null,
+      autonomyModeDraft,
+      executionEnvironmentDraft,
+      "Premium mode cleared for this task."
+    );
   }
 
   function toggleComposerShortcut(shortcut: ComposerShortcut) {
@@ -4308,6 +5777,9 @@ export function ChatWorkspace({
 
     let resolvedThreadId = currentThreadId;
     let resolvedRunId: string | null = null;
+    let fallbackRefreshThreadId: string | null = currentThreadId ?? null;
+    let sawRunPersistedEvent = false;
+    let sawDoneEvent = false;
     const composerContext = buildComposerContextPayload(
       composerAttachments,
       selectedComposerShortcuts,
@@ -4320,6 +5792,8 @@ export function ChatWorkspace({
       selectedComposerShortcuts,
       voiceCapturedInDraft
     );
+    const browserIntent = looksLikeBrowserExecutionPrompt(finalMessage);
+    const optimisticBrowserTarget = browserIntent ? extractBrowserTargetFromPrompt(finalMessage) : null;
 
     const optimisticId = `local-user-${Date.now()}`;
     const optimisticMessage: Message = {
@@ -4340,6 +5814,10 @@ export function ChatWorkspace({
     setComposerNotice(null);
     setTodoSyncError(null);
     setTodoSyncNotice(null);
+    pendingThreadUrlSyncRef.current = null;
+    stopWorkspaceRefreshLoop();
+    liveStreamActiveRef.current = true;
+    browserAutofocusSignatureRef.current = null;
     setRunning(true);
     setCurrentRunStartedAt(new Date().toISOString());
     speechRecognitionRef.current?.stop();
@@ -4354,7 +5832,71 @@ export function ChatWorkspace({
     setLiveWorkbenchActivities([]);
     setComputerError(null);
     setComputerNotice(null);
-    setOperatorTab(selectedTaskTemplate?.recommended_operator_tab ?? "computer");
+    setWorkbenchAutoFollow(true);
+    if (browserIntent) {
+      const optimisticSessionId = OPTIMISTIC_BROWSER_SESSION_ID;
+      setOperatorTab("browser");
+      setSelectedPreviewStorageKey(null);
+      setSelectedBrowserSessionId(optimisticSessionId);
+      setLiveSessions({
+        [optimisticSessionId]: {
+          session_id: optimisticSessionId,
+          session_kind: "browser",
+          tool: "browser_automation",
+          status: "running",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          target_url: optimisticBrowserTarget,
+          final_url: null,
+          page_title: null,
+          action_mode: /login|log in|sign in|credentials|email:|password|pw:/i.test(finalMessage)
+            ? "interactive"
+            : "observe",
+          executed_actions: [],
+          skipped_actions: [],
+          headings: [],
+          links: [],
+          extracted_text: null,
+          warnings: [],
+          artifacts: [],
+          phase: "starting",
+          command: [],
+          stdout: null,
+          stderr: null,
+          stdout_delta: null,
+          stderr_delta: null,
+          returncode: null,
+          timed_out: false
+        }
+      });
+      setLiveSteps([
+        {
+          step_index: 0,
+          batch_index: 0,
+          agent_key: "vision_automation",
+          agent_name: "Vision / Automation Agent",
+          status: "running",
+          objective: compactText(finalMessage, 220),
+          dependencies: [],
+          execution_mode: "direct_browser_fast_path"
+        }
+      ]);
+      setLiveTimeline([
+        {
+          id: `optimistic-browser-${Date.now()}`,
+          created_at: new Date().toISOString(),
+          kind: "tool",
+          title: "Vision / Automation Agent started Browser automation",
+          status: "running",
+          tool: "browser_automation",
+          summary: optimisticBrowserTarget
+            ? `Opening ${optimisticBrowserTarget} and continuing the requested browser workflow.`
+            : "Opening the requested site and continuing the requested browser workflow."
+        }
+      ]);
+    } else {
+      setOperatorTab(selectedTaskTemplate?.recommended_operator_tab ?? "computer");
+    }
 
     const payload: ChatRunRequestPayload = {
       workspace_id: data.workspace_id,
@@ -4367,11 +5909,10 @@ export function ChatWorkspace({
         (selectedComposerShortcuts.length > 0
           ? selectedComposerShortcuts.some((shortcut) => shortcut.retrieval !== false)
           : true),
-      model_profile:
-        selectedTaskTemplate?.chat_defaults.model_profile ??
-        selectedComposerShortcuts.find((shortcut) => shortcut.modelProfile)?.modelProfile ??
-        selectedModelProfile,
+      model_profile: selectedModelProfile,
       template_key: selectedTaskTemplateKey,
+      autonomy_mode: autonomyModeDraft,
+      execution_environment: cleanExecutionEnvironment(executionEnvironmentDraft),
       composer_context: composerContext
     };
 
@@ -4386,297 +5927,394 @@ export function ChatWorkspace({
 
       if (!response.ok) {
         const failure = await response.json().catch(() => ({ detail: "Streaming failed." }));
+        liveStreamActiveRef.current = false;
         setError(failure.detail ?? "Streaming failed.");
         setMessages((current) => current.filter((item) => item.id !== optimisticId));
         setRunning(false);
+        setCurrentRunStartedAt(null);
         return;
       }
 
-      await consumeEventStream(response, (streamEvent) => {
-        const { event, data } = streamEvent;
+      const receivedEventCount = await consumeEventStream(response, (streamEvent) => {
+        try {
+          const { event, data } = streamEvent;
 
-        const timelineEntry = timelineEntryFromStream(event, data);
-        if (timelineEntry) {
-          setLiveTimeline((current) => [timelineEntry, ...current].slice(0, 80));
-        }
-
-        const approvalRequest = approvalRequestFromStream(event, data);
-        if (approvalRequest) {
-          setLiveApprovalRequests((current) => mergeApprovalRequests(current, approvalRequest));
-        }
-
-        const workbenchActivity = workbenchActivityFromEvent(event, data);
-        if (workbenchActivity) {
-          recordWorkbenchActivity(workbenchActivity, isRecord(data.result) ? data.result : undefined);
-        }
-
-        if (event === "tool.completed" && data.tool === "workspace_files" && isRecord(data.result)) {
-          const treePayload = buildWorkbenchTreeFromToolResult(data.result, workspaceId);
-          if (treePayload) {
-            setWorkbenchTree((current) => ({
-              ...current,
-              [treePayload.relative_path]: treePayload
-            }));
-            setExpandedDirectories((current) => ({
-              ...current,
-              [treePayload.relative_path]: true
-            }));
+          const timelineEntry = timelineEntryFromStream(event, data);
+          if (timelineEntry) {
+            setLiveTimeline((current) => [timelineEntry, ...current].slice(0, 80));
           }
 
-          const filePayload = buildWorkbenchFileFromToolResult(data.result, workspaceId);
-          if (filePayload) {
-            upsertWorkbenchEditor(filePayload, { activate: true, preserveDraft: true });
+          const approvalRequest = approvalRequestFromStream(event, data);
+          if (approvalRequest) {
+            setLiveApprovalRequests((current) => mergeApprovalRequests(current, approvalRequest));
+          }
+
+          const workbenchActivity = workbenchActivityFromEvent(event, data);
+          if (workbenchActivity) {
+            recordWorkbenchActivity(workbenchActivity, isRecord(data.result) ? data.result : undefined);
+          }
+
+          if (event === "tool.completed" && data.tool === "workspace_files" && isRecord(data.result)) {
+            const treePayload = buildWorkbenchTreeFromToolResult(data.result, workspaceId);
+            if (treePayload) {
+              setWorkbenchTree((current) => ({
+                ...current,
+                [treePayload.relative_path]: treePayload
+              }));
+              setExpandedDirectories((current) => ({
+                ...current,
+                [treePayload.relative_path]: true
+              }));
+            }
+
+            const filePayload = buildWorkbenchFileFromToolResult(data.result, workspaceId);
+            if (filePayload) {
+              upsertWorkbenchEditor(filePayload, { activate: true, preserveDraft: true });
+            }
+
+            if (
+              data.result.operation === "write_text" ||
+              data.result.operation === "write_json"
+            ) {
+              scheduleWorkbenchRepoRefresh();
+            }
+          }
+
+          if (event === "artifact.created") {
+            const artifacts = toToolArtifacts(data.artifact);
+            if (artifacts.length > 0) {
+              setLiveArtifacts((current) => mergeArtifacts(current, artifacts));
+            }
+            return;
           }
 
           if (
-            data.result.operation === "write_text" ||
-            data.result.operation === "write_json"
+            event === "computer.session.started" ||
+            event === "computer.session.updated" ||
+            event === "computer.session.completed" ||
+            event === "computer.session.failed" ||
+            event === "browser.snapshot" ||
+            event === "terminal.stdout" ||
+            event === "terminal.stderr"
           ) {
-            scheduleWorkbenchRepoRefresh();
-          }
-        }
-
-        if (event === "artifact.created") {
-          const artifacts = toToolArtifacts(data.artifact);
-          if (artifacts.length > 0) {
-            setLiveArtifacts((current) => mergeArtifacts(current, artifacts));
-          }
-          return;
-        }
-
-        if (
-          event === "computer.session.started" ||
-          event === "computer.session.updated" ||
-          event === "computer.session.completed" ||
-          event === "computer.session.failed" ||
-          event === "browser.snapshot" ||
-          event === "terminal.stdout" ||
-          event === "terminal.stderr"
-        ) {
-          const session = sessionFromEventData(data);
-          if (session) {
-            setLiveSessions((current) => upsertSessionState(current, session));
-            if ((session.artifacts?.length ?? 0) > 0) {
-              setLiveArtifacts((current) => mergeArtifacts(current, session.artifacts ?? []));
+            const session = sessionFromEventData(data);
+            if (session) {
+              setLiveSessions((current) => upsertSessionState(current, session));
+              if (session.session_kind === "browser") {
+                setSelectedBrowserSessionId((current) =>
+                  !current || current === OPTIMISTIC_BROWSER_SESSION_ID ? session.session_id : current
+                );
+                setOperatorTab((current) => {
+                  if (current === "browser") {
+                    return current;
+                  }
+                  if (workbenchAutoFollow || current === "code" || current === "computer") {
+                    return "browser";
+                  }
+                  return current;
+                });
+                const sessionPreviewArtifacts = previewableArtifacts(session.artifacts ?? []);
+                if (sessionPreviewArtifacts.length > 0) {
+                  const preferredSessionPreview =
+                    browserScreenshotArtifact(session) ??
+                    browserHtmlArtifact(session) ??
+                    sessionPreviewArtifacts[0];
+                  if (preferredSessionPreview) {
+                    setSelectedPreviewStorageKey(preferredSessionPreview.storage_key);
+                    setOperatorTab((current) =>
+                      workbenchAutoFollow || current === "browser" || current === "code" || current === "computer"
+                        ? "preview"
+                        : current
+                    );
+                  }
+                }
+              }
+              if ((session.artifacts?.length ?? 0) > 0) {
+                setLiveArtifacts((current) => mergeArtifacts(current, session.artifacts ?? []));
+              }
             }
           }
-        }
 
-        if (event === "thread") {
-          const threadId = String(data.thread_id ?? resolvedThreadId ?? "pending-thread");
-          resolvedThreadId = threadId;
-          const nextThread: Thread = {
-            id: threadId,
-            workspace_id: String(data.workspace_id ?? ""),
-            project_id: typeof data.project_id === "string" ? data.project_id : currentProjectId ?? null,
-            title: String(data.title ?? message.slice(0, 70)),
-            status: "active",
-            metadata: composerContext,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            message_count: 0,
-            run_count: 0,
-            last_message_preview: finalMessage,
-            last_activity_at: new Date().toISOString()
-          };
-          setCurrentThreadId(threadId);
-          syncThreadInUrl(threadId);
-          setThreads((current) => upsertThread(current, nextThread));
-          setTaskMemory(toSharedMemory(data.task_memory));
-          setProjectMemory(toSharedMemory(data.project_memory));
-          setMessages((current) =>
-            current.map((item) => (item.id === optimisticId ? { ...item, thread_id: threadId } : item))
-          );
-          return;
-        }
-
-        if (event === "run.created") {
-          resolvedRunId = String(data.run_id ?? "");
-          const provisionalRun: ChatRun = {
-            id: resolvedRunId,
-            thread_id: String(data.thread_id ?? resolvedThreadId ?? ""),
-            workspace_id: String(data.workspace_id ?? ""),
-            status: String(data.status ?? "running"),
-            supervisor_model: String(data.supervisor_model ?? selectedModelProfile),
-            user_message: String(data.user_message ?? finalMessage),
-            final_response: null,
-            summary: null,
-            plan: [],
-            created_at: String(data.created_at ?? new Date().toISOString())
-          };
-          setRuns((current) => [provisionalRun, ...current.filter((item) => item.id !== provisionalRun.id)]);
-          return;
-        }
-
-        if (event === "plan") {
-          setLivePlan((data.plan as LivePlanStep[]) ?? []);
-          if (resolvedRunId) {
-            setRuns((current) =>
-              current.map((run) =>
-                run.id === resolvedRunId ? { ...run, plan: ((data.plan as ChatRun["plan"]) ?? []) } : run
-              )
+          if (event === "thread") {
+            const threadId = String(data.thread_id ?? resolvedThreadId ?? "pending-thread");
+            resolvedThreadId = threadId;
+            fallbackRefreshThreadId = threadId;
+            const nextThread: Thread = {
+              id: threadId,
+              workspace_id: String(data.workspace_id ?? ""),
+              project_id: typeof data.project_id === "string" ? data.project_id : currentProjectId ?? null,
+              title: String(data.title ?? message.slice(0, 70)),
+              status: "active",
+              metadata: composerContext,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              message_count: 0,
+              run_count: 0,
+              last_message_preview: finalMessage,
+              last_activity_at: new Date().toISOString()
+            };
+            setCurrentThreadId(threadId);
+            pendingThreadUrlSyncRef.current = threadId;
+            setThreads((current) => upsertThread(current, nextThread));
+            setTaskMemory(toSharedMemory(data.task_memory));
+            setProjectMemory(toSharedMemory(data.project_memory));
+            setMessages((current) =>
+              current.map((item) => (item.id === optimisticId ? { ...item, thread_id: threadId } : item))
             );
+            return;
           }
-          return;
-        }
 
-        if (event === "batches") {
-          setExecutionBatches((data.batches as string[][]) ?? []);
-          return;
-        }
-
-        if (event === "batch.started") {
-          setActiveBatchIndex(Number(data.batch_index ?? 0));
-          return;
-        }
-
-        if (event === "batch.completed") {
-          setActiveBatchIndex((current) =>
-            current === Number(data.batch_index ?? -1) ? null : current
-          );
-          return;
-        }
-
-        if (event === "step.started") {
-          setLiveSteps((current) =>
-            upsertLiveStep(current, {
-              step_index: Number(data.step_index ?? 0),
-              batch_index: Number(data.batch_index ?? 0),
-              agent_key: String(data.agent_key ?? ""),
-              agent_name: String(data.agent_name ?? ""),
+          if (event === "run.created") {
+            resolvedRunId = String(data.run_id ?? "");
+            pendingRunSyncIdRef.current = resolvedRunId;
+            pendingRunSyncThreadIdRef.current = String(data.thread_id ?? resolvedThreadId ?? currentThreadId ?? "");
+            const provisionalRun: ChatRun = {
+              id: resolvedRunId,
+              thread_id: String(data.thread_id ?? resolvedThreadId ?? ""),
+              workspace_id: String(data.workspace_id ?? ""),
               status: String(data.status ?? "running"),
-              objective: String(data.objective ?? ""),
-              dependencies: ((data.dependencies as string[]) ?? []).map(String),
-              execution_mode: String(data.execution_mode ?? "")
-            })
-          );
-          return;
-        }
-
-        if (event === "step.escalated") {
-          setLiveSteps((current) =>
-            upsertLiveStep(current, {
-              step_index: Number(data.step_index ?? 0),
-              batch_index: Number(data.batch_index ?? 0),
-              agent_key: String(data.agent_key ?? ""),
-              agent_name: String(data.agent_name ?? ""),
-              status: String(data.status ?? "escalating"),
-              dependencies: [],
-              validation_summary: String(
-                ((data.validation as Record<string, unknown>)?.summary as string) ?? ""
-              ),
-              escalated: true
-            })
-          );
-          return;
-        }
-
-        if (event === "step.completed") {
-          setLiveSteps((current) =>
-            upsertLiveStep(current, {
-              step_index: Number(data.step_index ?? 0),
-              batch_index: Number(data.batch_index ?? 0),
-              agent_key: String(data.agent_key ?? ""),
-              agent_name: String(data.agent_name ?? ""),
-              status: String(data.status ?? "completed"),
-              dependencies: ((data.dependencies as string[]) ?? []).map(String),
-              execution_mode: String(data.execution_mode ?? ""),
-              confidence: Number(data.confidence ?? 0),
-              validation_summary: String(
-                ((data.validation as Record<string, unknown>)?.summary as string) ?? ""
-              ),
-              summary: String(data.summary ?? ""),
-              model: String(data.model ?? ""),
-              provider: String(data.provider ?? ""),
-              tools: (((data.tools as { tool: string; status: string }[]) ?? []) as {
-                tool: string;
-                status: string;
-              }[])
-            })
-          );
-          return;
-        }
-
-        if (event === "final") {
-          const nextTaskMemory = toSharedMemory(data.task_memory);
-          const nextProjectMemory = toSharedMemory(data.project_memory);
-          if (nextTaskMemory) {
-            setTaskMemory(nextTaskMemory);
+              supervisor_model: String(data.supervisor_model ?? selectedModelProfile),
+              user_message: String(data.user_message ?? finalMessage),
+              final_response: null,
+              summary: null,
+              plan: [],
+              created_at: String(data.created_at ?? new Date().toISOString())
+            };
+            setRuns((current) => [provisionalRun, ...current.filter((item) => item.id !== provisionalRun.id)]);
+            return;
           }
-          if (nextProjectMemory) {
-            setProjectMemory(nextProjectMemory);
+
+          if (event === "plan") {
+            setLivePlan((data.plan as LivePlanStep[]) ?? []);
+            if (resolvedRunId) {
+              setRuns((current) =>
+                current.map((run) =>
+                  run.id === resolvedRunId ? { ...run, plan: ((data.plan as ChatRun["plan"]) ?? []) } : run
+                )
+              );
+            }
+            return;
           }
-          const assistantMessage: Message = {
-            id: `local-assistant-${Date.now()}`,
-            thread_id: resolvedThreadId ?? "pending-thread",
-            run_id: resolvedRunId,
-            role: "assistant",
-            content: String(data.response ?? ""),
-            citations: ((data.citations as Message["citations"]) ?? []) as Message["citations"],
-            metadata: {
-              summary: String(data.summary ?? ""),
-              execution_batches: data.execution_batches ?? [],
-              scratchpad: data.scratchpad ?? {},
-              task_memory: data.task_memory ?? null,
-              project_memory: data.project_memory ?? null
-            },
-            created_at: new Date().toISOString()
-          };
-          setMessages((current) => [...current, assistantMessage]);
-          if (resolvedRunId) {
-            setRuns((current) =>
-              current.map((run) =>
-                run.id === resolvedRunId
-                  ? {
-                      ...run,
-                      status: "completed",
-                      final_response: assistantMessage.content,
-                      summary: String(data.summary ?? "")
-                    }
-                  : run
-              )
+
+          if (event === "batches") {
+            setExecutionBatches((data.batches as string[][]) ?? []);
+            return;
+          }
+
+          if (event === "batch.started") {
+            setActiveBatchIndex(Number(data.batch_index ?? 0));
+            return;
+          }
+
+          if (event === "batch.completed") {
+            setActiveBatchIndex((current) =>
+              current === Number(data.batch_index ?? -1) ? null : current
             );
+            return;
           }
-          return;
-        }
 
-        if (event === "run.persisted") {
-          if (resolvedThreadId) {
-            void refreshWorkspace(resolvedThreadId);
-          }
-          return;
-        }
-
-        if (event === "error") {
-          setError(String(data.message ?? "Streaming failed."));
-          if (resolvedRunId) {
-            setRuns((current) =>
-              current.map((run) =>
-                run.id === resolvedRunId ? { ...run, status: "failed", summary: String(data.message ?? "") } : run
-              )
+          if (event === "step.started") {
+            setLiveSteps((current) =>
+              upsertLiveStep(current, {
+                step_index: Number(data.step_index ?? 0),
+                batch_index: Number(data.batch_index ?? 0),
+                agent_key: String(data.agent_key ?? ""),
+                agent_name: String(data.agent_name ?? ""),
+                status: String(data.status ?? "running"),
+                objective: String(data.objective ?? ""),
+                dependencies: ((data.dependencies as string[]) ?? []).map(String),
+                execution_mode: String(data.execution_mode ?? "")
+              })
             );
+            return;
           }
-          return;
-        }
 
-        if (event === "done") {
-          setRunning(false);
-          setActiveBatchIndex(null);
+          if (event === "step.escalated") {
+            setLiveSteps((current) =>
+              upsertLiveStep(current, {
+                step_index: Number(data.step_index ?? 0),
+                batch_index: Number(data.batch_index ?? 0),
+                agent_key: String(data.agent_key ?? ""),
+                agent_name: String(data.agent_name ?? ""),
+                status: String(data.status ?? "escalating"),
+                dependencies: [],
+                validation_summary: String(
+                  ((data.validation as Record<string, unknown>)?.summary as string) ?? ""
+                ),
+                escalated: true
+              })
+            );
+            return;
+          }
+
+          if (event === "step.completed") {
+            setLiveSteps((current) =>
+              upsertLiveStep(current, {
+                step_index: Number(data.step_index ?? 0),
+                batch_index: Number(data.batch_index ?? 0),
+                agent_key: String(data.agent_key ?? ""),
+                agent_name: String(data.agent_name ?? ""),
+                status: String(data.status ?? "completed"),
+                dependencies: ((data.dependencies as string[]) ?? []).map(String),
+                execution_mode: String(data.execution_mode ?? ""),
+                confidence: Number(data.confidence ?? 0),
+                validation_summary: String(
+                  ((data.validation as Record<string, unknown>)?.summary as string) ?? ""
+                ),
+                summary: String(data.summary ?? ""),
+                model: String(data.model ?? ""),
+                provider: String(data.provider ?? ""),
+                tools: (((data.tools as { tool: string; status: string }[]) ?? []) as {
+                  tool: string;
+                  status: string;
+                }[])
+              })
+            );
+            return;
+          }
+
+          if (event === "final") {
+            const nextTaskMemory = toSharedMemory(data.task_memory);
+            const nextProjectMemory = toSharedMemory(data.project_memory);
+            if (nextTaskMemory) {
+              setTaskMemory(nextTaskMemory);
+            }
+            if (nextProjectMemory) {
+              setProjectMemory(nextProjectMemory);
+            }
+            const assistantMessage: Message = {
+              id: `local-assistant-${Date.now()}`,
+              thread_id: resolvedThreadId ?? "pending-thread",
+              run_id: resolvedRunId,
+              role: "assistant",
+              content: String(data.response ?? ""),
+              citations: ((data.citations as Message["citations"]) ?? []) as Message["citations"],
+              metadata: {
+                summary: String(data.summary ?? ""),
+                execution_batches: data.execution_batches ?? [],
+                scratchpad: data.scratchpad ?? {},
+                task_memory: data.task_memory ?? null,
+                project_memory: data.project_memory ?? null
+              },
+              created_at: new Date().toISOString()
+            };
+            setMessages((current) => [...current, assistantMessage]);
+            if (resolvedRunId) {
+              setRuns((current) =>
+                current.map((run) =>
+                  run.id === resolvedRunId
+                    ? {
+                        ...run,
+                        status: "completed",
+                        final_response: assistantMessage.content,
+                        summary: String(data.summary ?? "")
+                      }
+                    : run
+                )
+              );
+            }
+            return;
+          }
+
+          if (event === "run.persisted") {
+            sawRunPersistedEvent = true;
+            fallbackRefreshThreadId = resolvedThreadId ?? fallbackRefreshThreadId;
+            return;
+          }
+
+          if (event === "error") {
+            liveStreamActiveRef.current = false;
+            setError(String(data.message ?? "Streaming failed."));
+            pendingRunSyncIdRef.current = null;
+            pendingRunSyncThreadIdRef.current = null;
+            if (resolvedRunId) {
+              setRuns((current) =>
+                current.map((run) =>
+                  run.id === resolvedRunId ? { ...run, status: "failed", summary: String(data.message ?? "") } : run
+                )
+              );
+            }
+            return;
+          }
+
+          if (event === "done") {
+            sawDoneEvent = true;
+            liveStreamActiveRef.current = false;
+            setActiveBatchIndex(null);
+            const nextThreadId = resolvedThreadId ?? fallbackRefreshThreadId ?? null;
+            if (nextThreadId) {
+              startWorkspaceRefreshLoop(nextThreadId, {
+                immediate: true,
+                timeoutMs: 20000
+              });
+            } else {
+              setRunning(false);
+              setCurrentRunStartedAt(null);
+            }
+          }
+        } catch (streamHandlingError) {
+          console.error("Live run event handling failed.", streamEvent, streamHandlingError);
+          setComputerError("Live browser state hit a sync issue. Recovering from persisted run data.");
         }
       });
+      if (receivedEventCount === 0) {
+        throw new Error("Live run emitted no events.");
+      }
+      liveStreamActiveRef.current = false;
+      if (!sawDoneEvent || !sawRunPersistedEvent) {
+        fallbackRefreshThreadId =
+          resolvedThreadId ?? pendingThreadUrlSyncRef.current ?? currentThreadId ?? fallbackRefreshThreadId ?? null;
+        setActiveBatchIndex(null);
+        setRunning(true);
+        startWorkspaceRefreshLoop(fallbackRefreshThreadId, {
+          immediate: true,
+          timeoutMs: 90000
+        });
+      }
       setComposerAttachments([]);
       setSelectedComposerShortcutKeys([]);
       setVoiceInterimTranscript("");
       setVoiceCapturedInDraft(false);
     } catch {
-      setError("Live run streaming is unavailable.");
-      setMessages((current) => current.filter((item) => item.id !== optimisticId));
-      setRunning(false);
+      liveStreamActiveRef.current = false;
+      fallbackRefreshThreadId =
+        resolvedThreadId ?? pendingThreadUrlSyncRef.current ?? currentThreadId ?? fallbackRefreshThreadId ?? null;
+      setError("Live updates are delayed. The task is still syncing.");
       setActiveBatchIndex(null);
-    } finally {
-      setRunning(false);
+      setRunning(true);
+      startWorkspaceRefreshLoop(fallbackRefreshThreadId, {
+        immediate: true,
+        timeoutMs: 90000
+      });
     }
   }
+
+  syncThreadInUrlRef.current = syncThreadInUrl;
+  submitRunMessageRef.current = submitRunMessage;
+
+  useEffect(() => {
+    if (!wantsReplay || !currentThreadId || !activeThreadReplayPrompt || running || loadingThread || isTaskPaused) {
+      if (!wantsReplay) {
+        replayRequestRef.current = null;
+      }
+      return;
+    }
+    const replayKey = `${currentThreadId}:${activeThreadReplayMessage?.id ?? activeThreadReplayPrompt}`;
+    if (replayRequestRef.current === replayKey) {
+      return;
+    }
+    replayRequestRef.current = replayKey;
+    syncThreadInUrlRef.current?.(currentThreadId);
+    void submitRunMessageRef.current?.(activeThreadReplayPrompt);
+  }, [
+    activeThreadReplayMessage?.id,
+    activeThreadReplayPrompt,
+    currentThreadId,
+    isTaskPaused,
+    loadingThread,
+    running,
+    wantsReplay
+  ]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -4927,97 +6565,136 @@ export function ChatWorkspace({
               })}
           </div>
         </motion.div>
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/10 pb-3">
-          <div className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="surface-label">Chat</p>
-              {running ? (
-                <span className="text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
-                  Working for {liveRunElapsedLabel ?? "0s"}
-                </span>
-              ) : activeThread ? (
-                <span className="rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-black/[0.46]">
-                  {formatRelativeTime(activeThread.updated_at)}
-                </span>
-              ) : null}
-            </div>
-            <h1 className="font-display text-[1.55rem] leading-[1.04] text-black/[0.86] xl:text-[1.7rem]">
-              {activeThread?.title ?? selectedProject?.name ?? "Swarm workspace"}
-            </h1>
-            <p className="max-w-[38rem] text-sm leading-6 text-black/[0.54]">
-              {activeThread
-                ? "Conversation stays centered here while the workbench handles execution on the right."
-                : currentProjectId
-                  ? "Choose a task from the rail or start a fresh thread."
-                  : "Start a task from the rail and keep this column focused on chat."}
-            </p>
-          </div>
-          <div className="flex max-w-[660px] flex-wrap items-center justify-end gap-1.5">
-            <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-sm text-black/[0.68]">
-              <span className="text-[10px] uppercase tracking-[0.14em] text-black/[0.45]">Model</span>
-              <div className="relative">
-                <select
-                  value={selectedModelProfile}
-                  onChange={(event) => void handleModelProfileChange(event.target.value)}
-                  disabled={!activeThread || headerActionLoading === "model"}
-                  className="appearance-none bg-transparent pr-6 text-[13px] outline-none disabled:opacity-60"
-                >
-                  {MODEL_PROFILE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 text-black/[0.45]" />
+        <div className="relative border-b border-black/10 pb-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="surface-label">Chat</p>
+                {running ? (
+                  <span className="text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
+                    Working for {liveRunElapsedLabel ?? "0s"}
+                  </span>
+                ) : activeThread ? (
+                  <span className="rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-black/[0.46]">
+                    {formatRelativeTime(activeThread.updated_at)}
+                  </span>
+                ) : null}
               </div>
+              <h1 className="font-display text-[1.55rem] leading-[1.04] text-black/[0.86] xl:text-[1.7rem]">
+                {activeThread?.title ?? selectedProject?.name ?? "Swarm workspace"}
+              </h1>
+              <p className="max-w-[38rem] text-sm leading-6 text-black/[0.54]">
+                {activeThread
+                  ? "Conversation stays centered here while the workbench handles execution on the right."
+                  : currentProjectId
+                    ? "Choose a task from the rail or start a fresh thread."
+                    : "Start a task from the rail and keep this column focused on chat."}
+              </p>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setHeaderPanel((current) => (current === "share" ? null : "share"));
-                setHeaderError(null);
-                setHeaderNotice(null);
-              }}
-              disabled={!activeThread}
-              className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
-            >
-              <Copy className="h-3.5 w-3.5" />
-              Share
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setHeaderPanel((current) => (current === "settings" ? null : "settings"));
-                setHeaderError(null);
-                setHeaderNotice(null);
-              }}
-              disabled={!activeThread}
-              className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
-            >
-              <Settings2 className="h-3.5 w-3.5" />
-              More
-            </button>
-            <button
-              type="button"
-              className="rounded-full bg-ink px-3.5 py-2 text-[13px] text-white"
-              onClick={createThread}
-            >
-              New
-            </button>
-            <button
-              type="button"
-              onClick={toggleWorkspacePaneCollapsed}
-              className="hidden h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45 xl:inline-flex"
-              aria-label="Collapse chat workspace"
-              title="Collapse chat workspace"
-            >
-              <ChevronRight className="h-4 w-4 rotate-180" />
-            </button>
+            <div className="flex max-w-[660px] flex-wrap items-center justify-end gap-1.5">
+              <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-sm text-black/[0.68]">
+                <span className="text-[10px] uppercase tracking-[0.14em] text-black/[0.45]">Model</span>
+                <div className="flex min-w-[320px] flex-col gap-0.5">
+                  <select
+                    value={selectedModelProfile}
+                    onChange={(event) => void handleModelProfileChange(event.target.value)}
+                    disabled={!activeThread || headerActionLoading === "model"}
+                    className="appearance-none bg-transparent pr-6 text-[13px] outline-none disabled:opacity-60"
+                  >
+                    {modelProfileOptions.map((option) => (
+                      <option key={option.value} value={option.value} disabled={!option.configured}>
+                        {option.menuLabel}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="pr-6 text-[10px] uppercase tracking-[0.12em] text-black/[0.42]">
+                    {selectedModelOption?.description ?? "General"}
+                  </span>
+                  <ChevronDown className="pointer-events-none absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 text-black/[0.45]" />
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setHeaderPanel((current) => (current === "share" ? null : "share"));
+                  setHeaderError(null);
+                  setHeaderNotice(null);
+                }}
+                disabled={!activeThread}
+                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
+              >
+                <Copy className="h-3.5 w-3.5" />
+                Share
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setHeaderPanel((current) => (current === "settings" ? null : "settings"));
+                  setHeaderError(null);
+                  setHeaderNotice(null);
+                }}
+                disabled={!activeThread}
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-full border px-3 py-2 text-[13px] disabled:opacity-60",
+                  browserTakeoverRequest
+                    ? "border-amber-300 bg-amber-50 text-amber-900"
+                    : "border-black/10 bg-white text-black/[0.72]"
+                )}
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                Controls
+              </button>
+              {activeThreadReplayPrompt && (
+                <button
+                  type="button"
+                  onClick={() => void submitRunMessage(activeThreadReplayPrompt)}
+                  disabled={!activeThread || running || isTaskPaused}
+                  className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Replay
+                </button>
+              )}
+              <button
+                type="button"
+                className="rounded-full bg-ink px-3.5 py-2 text-[13px] text-white"
+                onClick={createThread}
+              >
+                New
+              </button>
+              <button
+                type="button"
+                onClick={toggleWorkspacePaneCollapsed}
+                className="hidden h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45 xl:inline-flex"
+                aria-label="Collapse chat workspace"
+                title="Collapse chat workspace"
+              >
+                <ChevronRight className="h-4 w-4 rotate-180" />
+              </button>
+            </div>
           </div>
-        </div>
 
-        {(headerPanel || headerError || headerNotice) && (
-          <div className="mt-3 rounded-[20px] border border-black/10 bg-white/75 p-3.5">
+          {(headerPanel || headerError || headerNotice) && (
+            <div className="absolute inset-x-0 top-full z-30 mt-3 flex justify-end">
+              <div className="w-full max-w-[860px] overflow-hidden rounded-[24px] border border-black/10 bg-white/96 shadow-[0_26px_70px_rgba(15,23,42,0.14)] backdrop-blur">
+                <div className="flex items-center justify-between gap-3 border-b border-black/10 px-4 py-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-black/[0.46]">
+                      {headerPanel === "share" ? "Share controls" : headerPanel === "settings" ? "Task controls" : "Task panel"}
+                    </p>
+                    <p className="mt-1 text-sm text-black/[0.62]">
+                      Open this only when you need controls. The chat column stays dedicated to the conversation.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setHeaderPanel(null)}
+                    className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-xs uppercase tracking-[0.14em] text-black/[0.6] transition hover:bg-sand/45"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="max-h-[min(72vh,760px)] overflow-y-auto px-3.5 py-3.5">
             {headerError && <p className="text-sm text-red-700">{headerError}</p>}
             {headerNotice && <p className="text-sm text-emerald-700">{headerNotice}</p>}
 
@@ -5054,9 +6731,9 @@ export function ChatWorkspace({
             {headerPanel === "settings" && activeThread && (
               <div className="mt-3 space-y-4">
                 <div>
-                  <p className="text-sm font-medium text-black/[0.82]">Task actions and settings</p>
+                  <p className="text-sm font-medium text-black/[0.82]">Task controls</p>
                   <p className="mt-1 text-sm leading-7 text-black/[0.62]">
-                    Keep the header quiet, then handle publish, duplicate, collaborator, and task state controls here.
+                    Keep chat centered in the middle column, and handle task settings, autonomy, takeover, premium swarm modes, and execution controls here instead.
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
@@ -5110,6 +6787,74 @@ export function ChatWorkspace({
                     </select>
                   </label>
                 </div>
+                <label className="space-y-2 text-sm text-black/[0.72]">
+                  <span className="block text-xs uppercase tracking-[0.16em] text-black/[0.45]">Task brief</span>
+                  <textarea
+                    value={taskBriefDraft}
+                    onChange={(event) => setTaskBriefDraft(event.target.value)}
+                    rows={5}
+                    placeholder="Set the persistent goal, constraints, or preferred direction for this task. Future runs on this thread will use it as their standing brief."
+                    className="w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 outline-none resize-y"
+                  />
+                  <p className="text-xs leading-6 text-black/[0.5]">
+                    This is the task’s standing objective. New instructions will be executed in the context of this brief until you change it.
+                  </p>
+                </label>
+                <div className="space-y-3 rounded-[20px] border border-black/10 bg-sand/25 px-4 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-black/[0.82]">Autonomy mode</p>
+                      <p className="mt-1 text-sm leading-7 text-black/[0.62]">
+                        Decide how aggressively Intmatrix should keep moving before it stops to hand back a blocker.
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-black/[0.04] px-3 py-2 text-[11px] uppercase tracking-[0.14em] text-black/[0.5]">
+                      {autonomyModeSummary(autonomyModeDraft)}
+                    </span>
+                  </div>
+                  <div className="grid gap-3 lg:grid-cols-3">
+                    {AUTONOMY_MODE_OPTIONS.map((option) => {
+                      const isSelected = autonomyModeDraft === option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setAutonomyModeDraft(option.value)}
+                          className={cn(
+                            "rounded-[18px] border px-4 py-4 text-left transition",
+                            isSelected
+                              ? "border-transparent bg-ink text-white shadow-[0_16px_36px_rgba(15,58,50,0.12)]"
+                              : "border-black/10 bg-white text-black/[0.76] hover:bg-sand/35"
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm font-medium">{option.label}</span>
+                            {isSelected && <ShieldCheck className="h-4 w-4" />}
+                          </div>
+                          <p className={cn("mt-2 text-sm leading-6", isSelected ? "text-white/82" : "text-black/[0.62]")}>
+                            {option.description}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void saveAutonomyModeControls()}
+                      disabled={!activeThread || headerActionLoading === "controls"}
+                      className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+                    >
+                      <Save className="h-4 w-4" />
+                      {headerActionLoading === "controls" ? "Saving..." : "Save autonomy"}
+                    </button>
+                    <span className="text-sm text-black/[0.56]">
+                      {autonomyModeDraft === "maximum"
+                        ? "Maximum autonomy still respects hard platform boundaries."
+                        : "You can switch this per task without changing the overall UI."}
+                    </span>
+                  </div>
+                </div>
                 <div className="space-y-3 rounded-[20px] border border-black/10 bg-sand/25 px-4 py-4">
                   <div>
                     <p className="text-sm font-medium text-black/[0.82]">Collaborators</p>
@@ -5158,8 +6903,366 @@ export function ChatWorkspace({
                     {publishState ? "Currently published" : "Currently private"}
                   </span>
                 </div>
+
+                {(browserTakeoverRequest || premiumTaskTemplates.length > 0 || activeThread) && (
+                  <div className="space-y-4 border-t border-black/10 pt-4">
+                    {browserTakeoverRequest && (
+                      <div className="rounded-[24px] border border-amber-200 bg-amber-50/85 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.16em] text-amber-900/70">
+                              Manual browser takeover
+                            </p>
+                            <h3 className="mt-2 text-base font-medium text-black/[0.82]">
+                              The site is blocked. You can take over this browser step.
+                            </h3>
+                            <p className="mt-2 text-sm leading-7 text-black/[0.66]">
+                              Solve the CAPTCHA, protection step, or unexpected browser gate, then tell the agent what
+                              you changed so it can continue from the updated page state.
+                            </p>
+                          </div>
+                          <Badge className="border-transparent bg-amber-600 text-white">takeover ready</Badge>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs uppercase tracking-[0.14em] text-black/[0.48]">
+                          <span>{formatToolName(browserTakeoverRequest.tool)}</span>
+                          {browserTakeoverRequest.targetLabel && (
+                            <span>{compactText(browserTakeoverRequest.targetLabel, 56)}</span>
+                          )}
+                          <span>{formatRelativeTime(browserTakeoverRequest.created_at)}</span>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-3">
+                          <button
+                            type="button"
+                            onClick={() => startBrowserTakeover(browserTakeoverRequest)}
+                            disabled={approvalActionLoading === browserTakeoverRequest.id}
+                            className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+                          >
+                            <ArrowUpRight className="h-4 w-4" />
+                            Take control in browser
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => activateOperatorTab("browser")}
+                            className="rounded-full border border-black/10 bg-white/85 px-4 py-2 text-sm text-black/[0.72] transition hover:bg-white"
+                          >
+                            Focus browser workbench
+                          </button>
+                        </div>
+                        <label className="mt-4 flex flex-col gap-2 text-sm text-black/[0.68]">
+                          <span className="text-xs uppercase tracking-[0.14em] text-black/[0.46]">
+                            Tell the agent what you did
+                          </span>
+                          <textarea
+                            value={takeoverNotes[browserTakeoverRequest.id] ?? ""}
+                            onChange={(event) =>
+                              setTakeoverNotes((current) => ({
+                                ...current,
+                                [browserTakeoverRequest.id]: event.target.value
+                              }))
+                            }
+                            rows={3}
+                            placeholder="I solved the CAPTCHA, confirmed the account, and landed on the dashboard."
+                            className="min-h-[92px] rounded-[18px] border border-black/10 bg-white/90 px-4 py-3 text-sm leading-6 text-black/[0.82] outline-none transition focus:border-black/20"
+                          />
+                        </label>
+                        <div className="mt-3 flex flex-wrap items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => void resumeBrowserTakeover(browserTakeoverRequest)}
+                            disabled={
+                              approvalActionLoading === browserTakeoverRequest.id ||
+                              isTaskPaused ||
+                              !(takeoverNotes[browserTakeoverRequest.id] ?? "").trim()
+                            }
+                            className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+                          >
+                            <ShieldCheck className="h-4 w-4" />
+                            {approvalActionLoading === browserTakeoverRequest.id ? "Resuming..." : "Hand control back"}
+                          </button>
+                          <span className="text-sm text-black/[0.58]">
+                            The agent will continue immediately from your note.
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid gap-3 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+                      {premiumTaskTemplates.length > 0 && (
+                        <div className="rounded-[24px] border border-black/10 bg-white/78 p-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">
+                                Premium swarm modes
+                              </p>
+                              <h3 className="mt-2 text-base font-medium text-black/[0.82]">
+                                Launch the higher-end multi-agent workflows deliberately.
+                              </h3>
+                              <p className="mt-2 text-sm leading-7 text-black/[0.62]">
+                                These presets make the planner, coder, tester, and research flows more visible and
+                                repeatable instead of hiding them behind prompt luck.
+                              </p>
+                            </div>
+                            {selectedTaskTemplate && (
+                              <span className="rounded-full bg-black/[0.04] px-3 py-2 text-[11px] uppercase tracking-[0.14em] text-black/[0.5]">
+                                {selectedTaskTemplate.name}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-4 grid gap-3">
+                            {premiumTaskTemplates.map((template) => {
+                              const isSelected = selectedTaskTemplateKey === template.key;
+                              const presetSummary = executionEnvironmentSummary(
+                                PREMIUM_TEMPLATE_ENVIRONMENT_PRESETS[template.key]
+                              );
+                              return (
+                                <button
+                                  key={template.key}
+                                  type="button"
+                                  onClick={() => void applyTaskTemplate(template)}
+                                  className={cn(
+                                    "rounded-[20px] border px-4 py-4 text-left transition",
+                                    isSelected
+                                      ? "border-transparent bg-ink text-white shadow-[0_16px_36px_rgba(15,58,50,0.12)]"
+                                      : "border-black/10 bg-white/88 text-black/[0.76] hover:bg-sand/35"
+                                  )}
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <span className="text-sm font-medium">{template.name}</span>
+                                    <span
+                                      className={cn(
+                                        "rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.14em]",
+                                        isSelected ? "bg-white/14 text-white/80" : "bg-black/[0.05] text-black/[0.46]"
+                                      )}
+                                    >
+                                      {template.recommended_operator_tab}
+                                    </span>
+                                  </div>
+                                  <p className={cn("mt-2 text-sm leading-6", isSelected ? "text-white/82" : "text-black/[0.62]")}>
+                                    {template.summary}
+                                  </p>
+                                  <p
+                                    className={cn(
+                                      "mt-3 text-[11px] uppercase tracking-[0.14em]",
+                                      isSelected ? "text-white/65" : "text-black/[0.46]"
+                                    )}
+                                  >
+                                    {presetSummary}
+                                  </p>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-4 flex flex-wrap items-center gap-3">
+                            {selectedTaskTemplate && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => activateOperatorTab(selectedTaskTemplate.recommended_operator_tab)}
+                                  className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white"
+                                >
+                                  <Sparkles className="h-4 w-4" />
+                                  Open {selectedTaskTemplate.recommended_operator_tab}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void clearTaskTemplate()}
+                                  className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-black/[0.72] transition hover:bg-sand/45"
+                                >
+                                  Clear mode
+                                </button>
+                              </>
+                            )}
+                            {templateNotice && <span className="text-sm text-emerald-700">{templateNotice}</span>}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="rounded-[24px] border border-black/10 bg-white/78 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.16em] text-black/[0.45]">
+                              Execution environment
+                            </p>
+                            <h3 className="mt-2 text-base font-medium text-black/[0.82]">
+                              Choose the runtime the swarm should steer toward.
+                            </h3>
+                            <p className="mt-2 text-sm leading-7 text-black/[0.62]">
+                              This controls the task’s preferred OS profile, runtime style, scale, and persistence so the
+                              agents behave more predictably.
+                            </p>
+                          </div>
+                          <span className="rounded-full bg-black/[0.04] px-3 py-2 text-[11px] uppercase tracking-[0.14em] text-black/[0.5]">
+                            {executionEnvironmentSummary(executionEnvironmentDraft)}
+                          </span>
+                        </div>
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                          <label className="space-y-2 text-sm text-black/[0.72]">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-black/[0.45]">Target OS</span>
+                            <select
+                              value={executionEnvironmentDraft?.target_os ?? ""}
+                              onChange={(event) =>
+                                updateExecutionEnvironmentField(
+                                  "target_os",
+                                  (event.target.value || undefined) as ExecutionEnvironmentRequest["target_os"] | undefined
+                                )
+                              }
+                              className="w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 outline-none"
+                            >
+                              {EXECUTION_TARGET_OS_OPTIONS.map((option) => (
+                                <option key={option.value || "auto-os"} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="space-y-2 text-sm text-black/[0.72]">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-black/[0.45]">Runtime</span>
+                            <select
+                              value={executionEnvironmentDraft?.runtime_profile ?? "auto"}
+                              onChange={(event) =>
+                                updateExecutionEnvironmentField(
+                                  "runtime_profile",
+                                  event.target.value as ExecutionEnvironmentRequest["runtime_profile"]
+                                )
+                              }
+                              className="w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 outline-none"
+                            >
+                              {EXECUTION_RUNTIME_PROFILE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="space-y-2 text-sm text-black/[0.72]">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-black/[0.45]">Resource tier</span>
+                            <select
+                              value={executionEnvironmentDraft?.resource_tier ?? ""}
+                              onChange={(event) =>
+                                updateExecutionEnvironmentField(
+                                  "resource_tier",
+                                  (event.target.value || undefined) as ExecutionEnvironmentRequest["resource_tier"] | undefined
+                                )
+                              }
+                              className="w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 outline-none"
+                            >
+                              {EXECUTION_RESOURCE_TIER_OPTIONS.map((option) => (
+                                <option key={option.value || "auto-tier"} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="space-y-2 text-sm text-black/[0.72]">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-black/[0.45]">Persistence</span>
+                            <select
+                              value={executionEnvironmentDraft?.persistence_scope ?? ""}
+                              onChange={(event) =>
+                                updateExecutionEnvironmentField(
+                                  "persistence_scope",
+                                  (event.target.value || undefined) as ExecutionEnvironmentRequest["persistence_scope"] | undefined
+                                )
+                              }
+                              className="w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 outline-none"
+                            >
+                              {EXECUTION_PERSISTENCE_SCOPE_OPTIONS.map((option) => (
+                                <option key={option.value || "auto-scope"} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="space-y-2 text-sm text-black/[0.72] sm:col-span-2">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-black/[0.45]">Network access</span>
+                            <select
+                              value={
+                                typeof executionEnvironmentDraft?.network_access === "boolean"
+                                  ? executionEnvironmentDraft.network_access
+                                    ? "enabled"
+                                    : "disabled"
+                                  : ""
+                              }
+                              onChange={(event) =>
+                                updateExecutionEnvironmentField(
+                                  "network_access",
+                                  event.target.value === ""
+                                    ? undefined
+                                    : event.target.value === "enabled"
+                                      ? true
+                                      : false
+                                )
+                              }
+                              className="w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 outline-none"
+                            >
+                              <option value="">Auto network</option>
+                              <option value="enabled">Enabled</option>
+                              <option value="disabled">Disabled</option>
+                            </select>
+                          </label>
+                        </div>
+                        <div className="mt-4 flex flex-wrap items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => void saveExecutionEnvironmentControls()}
+                            disabled={!activeThread || headerActionLoading === "controls"}
+                            className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+                          >
+                            <Save className="h-4 w-4" />
+                            {headerActionLoading === "controls" ? "Saving..." : "Save environment"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setExecutionEnvironmentDraft(activeExecutionEnvironment)}
+                            className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-black/[0.72] transition hover:bg-sand/45"
+                          >
+                            Reset to saved
+                          </button>
+                          {!activeThread && (
+                            <span className="text-sm text-black/[0.56]">
+                              Start or select a task to persist these controls.
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {browserTakeoverRequest && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-[20px] border border-amber-200 bg-amber-50/70 px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-xs uppercase tracking-[0.16em] text-amber-900/70">Browser blocked</p>
+              <p className="mt-1 text-sm text-black/[0.72]">
+                The agent needs your help with a CAPTCHA or protection step. Open Controls to take over and hand it back when you’re done.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setHeaderPanel("settings");
+                  setHeaderError(null);
+                  setHeaderNotice(null);
+                }}
+                className="rounded-full bg-ink px-4 py-2 text-sm text-white"
+              >
+                Open controls
+              </button>
+              <button
+                type="button"
+                onClick={() => activateOperatorTab("browser")}
+                className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-black/[0.72] transition hover:bg-white"
+              >
+                Focus browser
+              </button>
+            </div>
           </div>
         )}
 
@@ -5458,15 +7561,55 @@ export function ChatWorkspace({
                         ))}
                       </div>
                       <div className="mt-4 flex flex-wrap gap-3">
-                        <button
-                          type="button"
-                          onClick={() => void approvePendingRequest(request)}
-                          disabled={approvalActionLoading === request.id || running || isTaskPaused}
-                          className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
-                        >
-                          <ShieldCheck className="h-4 w-4" />
-                          {approvalActionLoading === request.id ? "Approving..." : "Approve and continue"}
-                        </button>
+                        {request.kind === "browser_takeover" ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => startBrowserTakeover(request)}
+                              disabled={approvalActionLoading === request.id}
+                              className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+                            >
+                              <ArrowUpRight className="h-4 w-4" />
+                              Take control
+                            </button>
+                            <label className="flex min-w-[260px] flex-1 flex-col gap-2 text-sm text-black/[0.68]">
+                              <span className="text-xs uppercase tracking-[0.14em] text-black/[0.46]">
+                                What did you do?
+                              </span>
+                              <textarea
+                                value={takeoverNotes[request.id] ?? ""}
+                                onChange={(event) =>
+                                  setTakeoverNotes((current) => ({
+                                    ...current,
+                                    [request.id]: event.target.value
+                                  }))
+                                }
+                                rows={3}
+                                placeholder="I solved the CAPTCHA and reached the dashboard."
+                                className="min-h-[92px] rounded-[18px] border border-black/10 bg-white/85 px-4 py-3 text-sm leading-6 text-black/[0.82] outline-none transition focus:border-black/20"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => void resumeBrowserTakeover(request)}
+                              disabled={approvalActionLoading === request.id || isTaskPaused}
+                              className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+                            >
+                              <ShieldCheck className="h-4 w-4" />
+                              {approvalActionLoading === request.id ? "Resuming..." : "Resume with note"}
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void approvePendingRequest(request)}
+                            disabled={approvalActionLoading === request.id || running || isTaskPaused}
+                            className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-sm text-white disabled:opacity-60"
+                          >
+                            <ShieldCheck className="h-4 w-4" />
+                            {approvalActionLoading === request.id ? "Approving..." : "Approve and continue"}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => void deferPendingRequest(request)}
@@ -5650,21 +7793,19 @@ export function ChatWorkspace({
                         </div>
 
                         {message.citations.length > 0 && (
-                          <div className="mt-3 rounded-[16px] border border-black/[0.08] bg-sand/18 p-3">
+                          <div className="mt-3 border-t border-black/[0.08] pt-3">
                             <div className="mb-2 flex items-center justify-between gap-3">
-                              <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-black/[0.58]">
+                              <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-black/[0.56]">
                                 <Globe className="h-3.5 w-3.5" />
                                 Sources
                               </div>
                               <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.14em] text-black/[0.42]">
                                 {referencedCitationIds.map((referenceId) => (
-                                  <span key={`${message.id}-${referenceId}`} className="rounded-full bg-white/80 px-2 py-1">
-                                    {referenceId}
-                                  </span>
+                                  <span key={`${message.id}-${referenceId}`}>{referenceId}</span>
                                 ))}
                               </div>
                             </div>
-                            <div className="space-y-2.5">
+                            <div className="space-y-1.5">
                               {message.citations.map((citation, citationIndex) => {
                                 const href = citationHref(data.workspace_id, citation);
                                 const citationKey =
@@ -5674,51 +7815,28 @@ export function ChatWorkspace({
                                   citation.relative_path ??
                                   citation.url ??
                                   `${message.id}-${citationIndex}`;
-                                const cardClasses = cn(
-                                  "block rounded-[14px] bg-white/88 px-3 py-2.5 text-sm transition",
-                                  href ? "hover:bg-white" : ""
-                                );
-                                const cardContent = (
-                                  <>
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div>
-                                        <div className="flex flex-wrap items-center gap-2">
-                                          {citation.reference_id && (
-                                            <span className="rounded-full bg-black/[0.05] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.55]">
-                                              {citation.reference_id}
-                                            </span>
-                                          )}
-                                          {citation.kind && (
-                                            <span className="rounded-full bg-black/[0.05] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.55]">
-                                              {citation.kind.replaceAll("_", " ")}
-                                            </span>
-                                          )}
-                                          {citation.source_type && (
-                                            <span className="rounded-full bg-black/[0.05] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-black/[0.55]">
-                                              {citation.source_type}
-                                            </span>
-                                          )}
-                                        </div>
-                                        <p className="mt-1.5 font-medium leading-6 text-black/[0.8]">{citation.title}</p>
-                                        {(citation.source_uri || citation.relative_path || citation.agent) && (
-                                          <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-black/[0.46]">
-                                            {citation.source_uri ?? citation.relative_path ?? citation.agent}
-                                          </p>
-                                        )}
-                                      </div>
-                                      {href && <ArrowUpRight className="h-4 w-4 shrink-0 text-black/50" />}
+                                const lineContent = (
+                                  <div className="flex items-start justify-between gap-3 text-[13px] leading-6 text-black/[0.7]">
+                                    <div className="min-w-0">
+                                      <span className="font-medium text-black/[0.52]">
+                                        {citation.reference_id ?? `S${citationIndex + 1}`}
+                                      </span>{" "}
+                                      <span className="font-medium text-black/[0.78]">{citation.title}</span>
+                                      {citation.kind && (
+                                        <span className="text-black/[0.42]"> · {citation.kind.replaceAll("_", " ")}</span>
+                                      )}
+                                      {(citation.source_uri || citation.relative_path || citation.agent) && (
+                                        <span className="text-black/[0.42]">
+                                          {" "}
+                                          · {citation.source_uri ?? citation.relative_path ?? citation.agent}
+                                        </span>
+                                      )}
+                                      {citation.excerpt && (
+                                        <span className="text-black/[0.48]"> — {citation.excerpt}</span>
+                                      )}
                                     </div>
-                                    {citation.excerpt && (
-                                      <p className="mt-2 text-sm leading-6 text-black/[0.66]">
-                                        {citation.excerpt}
-                                      </p>
-                                    )}
-                                    {typeof citation.score === "number" && (
-                                      <div className="mt-2 text-[10px] uppercase tracking-[0.16em] text-black/[0.44]">
-                                        Retrieval score {citation.score.toFixed(3)}
-                                      </div>
-                                    )}
-                                  </>
+                                    {href && <ArrowUpRight className="mt-1 h-3.5 w-3.5 shrink-0 text-black/45" />}
+                                  </div>
                                 );
 
                                 return href ? (
@@ -5727,14 +7845,12 @@ export function ChatWorkspace({
                                     href={href}
                                     target={citation.url ? "_blank" : undefined}
                                     rel={citation.url ? "noreferrer" : undefined}
-                                    className={cardClasses}
+                                    className="block transition hover:text-black"
                                   >
-                                    {cardContent}
+                                    {lineContent}
                                   </a>
                                 ) : (
-                                  <div key={citationKey} className={cardClasses}>
-                                    {cardContent}
-                                  </div>
+                                  <div key={citationKey}>{lineContent}</div>
                                 );
                               })}
                             </div>
@@ -5811,7 +7927,7 @@ export function ChatWorkspace({
                   <button
                     key={template.key}
                     type="button"
-                    onClick={() => applyTaskTemplate(template)}
+                    onClick={() => void applyTaskTemplate(template)}
                     className={cn(
                       "rounded-[24px] border px-4 py-4 text-left transition",
                       isSelected
@@ -5887,7 +8003,7 @@ export function ChatWorkspace({
                   </div>
                   <button
                     type="button"
-                    onClick={clearTaskTemplate}
+                    onClick={() => void clearTaskTemplate()}
                     className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-black/[0.72] transition hover:bg-white"
                   >
                     Clear template
@@ -6857,7 +8973,56 @@ export function ChatWorkspace({
                             >
                               {repoDiff && repoDiff.relative_path === selectedWorkbenchFile.relative_path ? (
                                 repoDiff.diff ? (
-                                  <pre className="whitespace-pre-wrap">{repoDiff.diff}</pre>
+                                  <div className="min-w-[900px] overflow-hidden rounded-[20px] border border-white/10">
+                                    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] border-b border-white/10 bg-white/[0.04] text-[10px] uppercase tracking-[0.16em] text-white/55">
+                                      <div className="border-r border-white/10 px-4 py-3">Saved / HEAD</div>
+                                      <div className="px-4 py-3">Working copy</div>
+                                    </div>
+                                    <div className="divide-y divide-white/6">
+                                      {parseUnifiedDiffRows(repoDiff.diff).map((row, index) =>
+                                        row.kind === "hunk" ? (
+                                          <div
+                                            key={`repo-hunk-${index}`}
+                                            className="px-4 py-2 text-[10px] uppercase tracking-[0.16em] text-sky-200/90"
+                                          >
+                                            {row.header}
+                                          </div>
+                                        ) : (
+                                          <div
+                                            key={`repo-row-${index}`}
+                                            className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
+                                          >
+                                            <div
+                                              className={cn(
+                                                "grid grid-cols-[56px_minmax(0,1fr)] border-r border-white/10",
+                                                workbenchDiffCellTone(row.leftKind)
+                                              )}
+                                            >
+                                              <div className="border-r border-black/5 px-3 py-2 text-right text-[10px] opacity-70">
+                                                {row.leftLineNumber ?? ""}
+                                              </div>
+                                              <pre className="overflow-x-auto whitespace-pre-wrap px-4 py-2">
+                                                {row.leftText || " "}
+                                              </pre>
+                                            </div>
+                                            <div
+                                              className={cn(
+                                                "grid grid-cols-[56px_minmax(0,1fr)]",
+                                                workbenchDiffCellTone(row.rightKind)
+                                              )}
+                                            >
+                                              <div className="border-r border-black/5 px-3 py-2 text-right text-[10px] opacity-70">
+                                                {row.rightLineNumber ?? ""}
+                                              </div>
+                                              <pre className="overflow-x-auto whitespace-pre-wrap px-4 py-2">
+                                                {row.rightText || " "}
+                                              </pre>
+                                            </div>
+                                          </div>
+                                        )
+                                      )}
+                                    </div>
+                                  </div>
                                 ) : (
                                   <div className="space-y-2 text-white/65">
                                     <p>{repoDiff.note ?? "No repository diff is available for this file."}</p>
@@ -7284,9 +9449,9 @@ export function ChatWorkspace({
                       <Badge className="border-black/10 bg-white/80 text-black/[0.72]">
                         {terminalSessions.length} terminal session{terminalSessions.length === 1 ? "" : "s"}
                       </Badge>
-                      <Badge className="border-black/10 bg-white/80 text-black/[0.72]">
-                        {previewArtifacts.length} preview{previewArtifacts.length === 1 ? "" : "s"}
-                      </Badge>
+                        <Badge className="border-black/10 bg-white/80 text-black/[0.72]">
+                          {availablePreviewArtifacts.length} preview{availablePreviewArtifacts.length === 1 ? "" : "s"}
+                        </Badge>
                       <Badge className="border-black/10 bg-white/80 text-black/[0.72]">
                         {computerSessions.filter((session) => session.status === "running").length} live
                       </Badge>
@@ -7378,15 +9543,42 @@ export function ChatWorkspace({
                                   {compactText(request.reason, 180)}
                                 </p>
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => void approvePendingRequest(request)}
-                                    disabled={approvalActionLoading === request.id || running || isTaskPaused}
-                                    className="inline-flex items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs uppercase tracking-[0.14em] text-white disabled:opacity-60"
-                                  >
-                                    <ShieldCheck className="h-3.5 w-3.5" />
-                                    {approvalActionLoading === request.id ? "Approving..." : "Approve"}
-                                  </button>
+                                  {request.kind === "browser_takeover" ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => startBrowserTakeover(request)}
+                                        disabled={approvalActionLoading === request.id}
+                                        className="inline-flex items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs uppercase tracking-[0.14em] text-white disabled:opacity-60"
+                                      >
+                                        <ArrowUpRight className="h-3.5 w-3.5" />
+                                        Take control
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void resumeBrowserTakeover(request)}
+                                        disabled={
+                                          approvalActionLoading === request.id ||
+                                          isTaskPaused ||
+                                          !(takeoverNotes[request.id] ?? "").trim()
+                                        }
+                                        className="inline-flex items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs uppercase tracking-[0.14em] text-white disabled:opacity-60"
+                                      >
+                                        <ShieldCheck className="h-3.5 w-3.5" />
+                                        {approvalActionLoading === request.id ? "Resuming..." : "Resume"}
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => void approvePendingRequest(request)}
+                                      disabled={approvalActionLoading === request.id || running || isTaskPaused}
+                                      className="inline-flex items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs uppercase tracking-[0.14em] text-white disabled:opacity-60"
+                                    >
+                                      <ShieldCheck className="h-3.5 w-3.5" />
+                                      {approvalActionLoading === request.id ? "Approving..." : "Approve"}
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => void deferPendingRequest(request)}
@@ -7396,6 +9588,20 @@ export function ChatWorkspace({
                                     Keep blocked
                                   </button>
                                 </div>
+                                {request.kind === "browser_takeover" && (
+                                  <textarea
+                                    value={takeoverNotes[request.id] ?? ""}
+                                    onChange={(event) =>
+                                      setTakeoverNotes((current) => ({
+                                        ...current,
+                                        [request.id]: event.target.value
+                                      }))
+                                    }
+                                    rows={3}
+                                    placeholder="Describe what you did after taking over."
+                                    className="mt-3 min-h-[84px] w-full rounded-[16px] border border-black/10 bg-white/88 px-3 py-3 text-sm leading-6 text-black/[0.82] outline-none transition focus:border-black/20"
+                                  />
+                                )}
                               </div>
                             ))}
                           </div>
@@ -7467,7 +9673,7 @@ export function ChatWorkspace({
                             <button
                               key={template.key}
                               type="button"
-                              onClick={() => applyTaskTemplate(template)}
+                              onClick={() => void applyTaskTemplate(template)}
                               className={cn(
                                 "rounded-full border px-3 py-2 text-xs uppercase tracking-[0.14em] transition",
                                 isSelected
@@ -7482,7 +9688,7 @@ export function ChatWorkspace({
                         {selectedTaskTemplate && (
                           <button
                             type="button"
-                            onClick={clearTaskTemplate}
+                            onClick={() => void clearTaskTemplate()}
                             className="rounded-full border border-black/10 bg-white px-3 py-2 text-xs uppercase tracking-[0.14em] text-black/[0.68] transition hover:bg-sand/45"
                           >
                             Clear
@@ -7956,9 +10162,9 @@ export function ChatWorkspace({
                     )}
                   </div>
 
-                  {previewArtifacts.length > 0 && (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {previewArtifacts.map((artifact) => (
+                  {availablePreviewArtifacts.length > 0 && (
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {availablePreviewArtifacts.map((artifact) => (
                         <button
                           key={artifact.storage_key}
                           type="button"

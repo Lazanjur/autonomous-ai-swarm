@@ -37,6 +37,16 @@ export type Message = {
   created_at: string;
 };
 
+export type ExecutionEnvironmentRequest = {
+  target_os?: "linux" | "windows" | "macos";
+  runtime_profile?: "auto" | "python" | "node" | "shell" | "powershell";
+  resource_tier?: "small" | "medium" | "large" | "gpu";
+  network_access?: boolean | null;
+  persistence_scope?: "task" | "workspace";
+};
+
+export type AutonomyMode = "safe" | "autonomous" | "maximum";
+
 export type ChatRun = {
   id: string;
   thread_id: string;
@@ -204,6 +214,7 @@ export type ChatWorkbenchFileData = {
   size_bytes: number;
   truncated: boolean;
   content: string;
+  related_files: WorkbenchRelatedFile[];
 };
 
 export type ChatWorkbenchFileSaveResponse = {
@@ -234,6 +245,61 @@ export type ChatWorkbenchRepoData = {
   staged_count: number;
   unstaged_count: number;
   untracked_count: number;
+};
+
+export type WorkbenchRelatedFile = {
+  relative_path: string;
+  name: string;
+  extension?: string | null;
+  reason: string;
+  score: number;
+};
+
+export type ChatWorkbenchBranchCreateRequest = {
+  workspace_id: string;
+  branch_name: string;
+  from_ref?: string;
+};
+
+export type ChatWorkbenchBranchCreateResponse = {
+  workspace_id: string;
+  branch_name: string;
+  head?: string | null;
+  repo: ChatWorkbenchRepoData;
+};
+
+export type ChatWorkbenchCommitRequest = {
+  workspace_id: string;
+  message: string;
+  paths?: string[];
+};
+
+export type ChatWorkbenchCommitResponse = {
+  workspace_id: string;
+  committed: boolean;
+  message: string;
+  commit?: string | null;
+  note?: string | null;
+  repo: ChatWorkbenchRepoData;
+};
+
+export type ChatWorkbenchPullRequestRequest = {
+  workspace_id: string;
+  title: string;
+  body?: string | null;
+  base?: string | null;
+  head?: string | null;
+  draft?: boolean;
+};
+
+export type ChatWorkbenchPullRequestResponse = {
+  workspace_id: string;
+  created: boolean;
+  title: string;
+  head?: string | null;
+  base?: string | null;
+  url?: string | null;
+  note?: string | null;
 };
 
 export type ChatWorkbenchDiffData = {
@@ -282,6 +348,7 @@ export type AgentRecentStep = {
 
 export type AgentWorkspaceOverview = {
   total_agents: number;
+  configured_provider_count: number;
   active_agents_24h: number;
   busy_agents: number;
   idle_agents: number;
@@ -293,11 +360,45 @@ export type AgentWorkspaceOverview = {
   last_activity_at?: string | null;
 };
 
+export type ProviderCapability = {
+  key: string;
+  label: string;
+  family: string;
+  configured: boolean;
+  supports_chat: boolean;
+  supports_embeddings: boolean;
+  supports_vision: boolean;
+  detail: string;
+};
+
+export type ModelCapability = {
+  name: string;
+  provider_key: string;
+  provider_label: string;
+  family: string;
+  configured: boolean;
+  context_window_tokens: number;
+  latency_tier: string;
+  supports_chat: boolean;
+  supports_embeddings: boolean;
+  supports_vision: boolean;
+  supports_reasoning: boolean;
+  supports_structured_output: boolean;
+  supports_planning: boolean;
+  supports_research: boolean;
+  supports_coding: boolean;
+  supports_ui_diagrams: boolean;
+  specialties: string[];
+  notes: string[];
+};
+
 export type AgentSurface = {
   key: string;
   name: string;
   fast_model: string;
   slow_model: string;
+  fast_model_details: ModelCapability;
+  slow_model_details: ModelCapability;
   specialties: string[];
   tools: AgentTool[];
   health_state: string;
@@ -322,7 +423,12 @@ export type AgentSurface = {
 export type ChatAgentsData = {
   workspace_id: string;
   supervisor_model: string;
+  planner_model: string;
+  supervisor_model_details: ModelCapability;
+  planner_model_details: ModelCapability;
   overview: AgentWorkspaceOverview;
+  providers: ProviderCapability[];
+  model_catalog: ModelCapability[];
   agents: AgentSurface[];
   recent_activity: AgentRecentStep[];
 };
@@ -335,9 +441,11 @@ export type ChatRunRequestPayload = {
   project_id?: string | null;
   message: string;
   mode?: string;
+  autonomy_mode?: AutonomyMode;
   use_retrieval?: boolean;
   model_profile?: string | null;
   template_key?: string | null;
+  execution_environment?: ExecutionEnvironmentRequest | null;
   composer_context?: Record<string, unknown>;
 };
 
@@ -451,6 +559,12 @@ export type ComputerSession = {
   extracted_text?: string | null;
   warnings?: string[];
   artifacts?: ToolArtifactRef[];
+  manual_takeover?: {
+    required: boolean;
+    reason?: string | null;
+    target_url?: string | null;
+    detected_markers?: string[];
+  } | null;
   metrics?: Record<string, unknown>;
   command?: string[];
   stdout?: string | null;
@@ -803,6 +917,7 @@ export type OpsDashboard = {
   health: {
     status: string;
     models_configured: boolean;
+    configured_providers: string[];
     database_ok: boolean;
     rate_limiting_enabled: boolean;
     provider_budget_enforced: boolean;

@@ -1,5 +1,6 @@
 import { ChatWorkspace } from "@/components/app-shell/chat-workspace";
 import {
+  getChatAgents,
   getChatWorkbenchFile,
   getChatWorkbenchTree,
   getChatWorkspace,
@@ -58,6 +59,7 @@ export default async function ChatPage({
     ? await getChatWorkbenchFile(workspaceId, preferredFile.relative_path)
     : null;
   const templateCatalog = await getTaskTemplates(workspaceId);
+  const chatAgents = await getChatAgents(workspaceId);
 
   return (
     <ChatWorkspace
@@ -65,6 +67,7 @@ export default async function ChatPage({
       initialWorkbenchTree={workbenchTree}
       initialWorkbenchFile={workbenchFile}
       taskTemplates={templateCatalog?.templates ?? []}
+      chatAgents={chatAgents ?? undefined}
     />
   );
 }

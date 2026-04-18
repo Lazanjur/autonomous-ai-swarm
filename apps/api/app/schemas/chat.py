@@ -73,16 +73,29 @@ class ToolCallRead(ReadModel):
     created_at: datetime
 
 
+class ExecutionEnvironmentRequest(BaseModel):
+    target_os: Literal["linux", "windows", "macos"] = "linux"
+    runtime_profile: Literal["auto", "python", "node", "shell", "powershell"] = "auto"
+    resource_tier: Literal["small", "medium", "large", "gpu"] = "small"
+    network_access: bool | None = None
+    persistence_scope: Literal["task", "workspace"] = "task"
+
+
+AutonomyMode = Literal["safe", "autonomous", "maximum"]
+
+
 class ChatRunRequest(BaseModel):
     workspace_id: UUID
     thread_id: UUID | None = None
     project_id: UUID | None = None
     message: str
     mode: str = "autonomous"
+    autonomy_mode: AutonomyMode = "autonomous"
     use_retrieval: bool = True
     model_profile: str | None = None
     template_key: str | None = Field(default=None, max_length=120)
     composer_context: dict = Field(default_factory=dict)
+    execution_environment: ExecutionEnvironmentRequest | None = None
 
 
 class ChatRunResponse(BaseModel):
@@ -274,6 +287,7 @@ class ChatWorkbenchFileResponse(BaseModel):
     size_bytes: int
     truncated: bool = False
     content: str
+    related_files: list["WorkbenchRelatedFileRead"] = Field(default_factory=list)
 
 
 class ChatWorkbenchFileUpdateRequest(BaseModel):
@@ -311,6 +325,74 @@ class ChatWorkbenchRepoResponse(BaseModel):
     staged_count: int = 0
     unstaged_count: int = 0
     untracked_count: int = 0
+
+
+class WorkbenchRelatedFileRead(BaseModel):
+    relative_path: str
+    name: str
+    extension: str | None = None
+    reason: str
+    score: int
+
+
+class ChatWorkbenchBranchCreateRequest(BaseModel):
+    workspace_id: UUID
+    branch_name: str = Field(min_length=1, max_length=255)
+    from_ref: str = Field(default="HEAD", min_length=1, max_length=255)
+
+
+class ChatWorkbenchBranchCreateResponse(BaseModel):
+    workspace_id: UUID
+    branch_name: str
+    head: str | None = None
+    repo: ChatWorkbenchRepoResponse
+
+
+class ChatWorkbenchCommitRequest(BaseModel):
+    workspace_id: UUID
+    message: str = Field(min_length=1, max_length=255)
+    paths: list[str] = Field(default_factory=list)
+
+
+class ChatWorkbenchCommitResponse(BaseModel):
+    workspace_id: UUID
+    committed: bool = False
+    message: str
+    commit: str | None = None
+    note: str | None = None
+    repo: ChatWorkbenchRepoResponse
+
+
+class ChatWorkbenchPullRequestRequest(BaseModel):
+    workspace_id: UUID
+    title: str = Field(min_length=1, max_length=255)
+    body: str | None = None
+    base: str | None = Field(default=None, max_length=255)
+    head: str | None = Field(default=None, max_length=255)
+    draft: bool = True
+
+
+class ChatWorkbenchPullRequestResponse(BaseModel):
+    workspace_id: UUID
+    created: bool = False
+    title: str
+    head: str | None = None
+    base: str | None = None
+    url: str | None = None
+    note: str | None = None
+
+
+class ChatWorkbenchRollbackRequest(BaseModel):
+    workspace_id: UUID
+    paths: list[str] = Field(default_factory=list)
+
+
+class ChatWorkbenchRollbackResponse(BaseModel):
+    workspace_id: UUID
+    restored: bool = False
+    restored_paths: list[str] = Field(default_factory=list)
+    note: str | None = None
+    repo: ChatWorkbenchRepoResponse
 
 
 class ChatWorkbenchDiffResponse(BaseModel):
@@ -366,6 +448,7 @@ class AgentRecentStepRead(BaseModel):
 
 class AgentWorkspaceOverviewRead(BaseModel):
     total_agents: int = 0
+    configured_provider_count: int = 0
     active_agents_24h: int = 0
     busy_agents: int = 0
     idle_agents: int = 0
@@ -382,6 +465,8 @@ class AgentSurfaceRead(BaseModel):
     name: str
     fast_model: str
     slow_model: str
+    fast_model_details: "ModelCapabilityRead"
+    slow_model_details: "ModelCapabilityRead"
     specialties: list[str] = Field(default_factory=list)
     tools: list[AgentToolRead] = Field(default_factory=list)
     health_state: str = "quiet"
@@ -403,10 +488,47 @@ class AgentSurfaceRead(BaseModel):
     recent_steps: list[AgentRecentStepRead] = Field(default_factory=list)
 
 
+class ProviderCapabilityRead(BaseModel):
+    key: str
+    label: str
+    family: str
+    configured: bool
+    supports_chat: bool
+    supports_embeddings: bool
+    supports_vision: bool
+    detail: str
+
+
+class ModelCapabilityRead(BaseModel):
+    name: str
+    provider_key: str
+    provider_label: str
+    family: str
+    configured: bool
+    context_window_tokens: int
+    latency_tier: str
+    supports_chat: bool
+    supports_embeddings: bool
+    supports_vision: bool
+    supports_reasoning: bool
+    supports_structured_output: bool
+    supports_planning: bool
+    supports_research: bool
+    supports_coding: bool
+    supports_ui_diagrams: bool
+    specialties: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class ChatAgentsResponse(BaseModel):
     workspace_id: UUID
     supervisor_model: str
+    planner_model: str
+    supervisor_model_details: ModelCapabilityRead
+    planner_model_details: ModelCapabilityRead
     overview: AgentWorkspaceOverviewRead
+    providers: list[ProviderCapabilityRead] = Field(default_factory=list)
+    model_catalog: list[ModelCapabilityRead] = Field(default_factory=list)
     agents: list[AgentSurfaceRead] = Field(default_factory=list)
     recent_activity: list[AgentRecentStepRead] = Field(default_factory=list)
 

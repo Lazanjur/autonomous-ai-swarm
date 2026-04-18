@@ -2,6 +2,7 @@ import pytest
 
 from app.core.middleware import InMemoryRateLimiter
 from app.services.approval_policy import SensitiveActionPolicy
+from app.services.providers.base import CompletionResult
 from app.services.providers.router import ProviderRouter
 from app.services.tools.notifications import NotificationDispatchTool
 
@@ -122,3 +123,54 @@ async def test_provider_router_fails_closed_when_local_fallback_is_disabled(monk
             "Give me a concise answer.",
             metadata={"workspace_id": "00000000-0000-0000-0000-000000000001"},
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_name", "provider_key"),
+    [
+        ("gpt-5.4", "openai"),
+        ("claude-sonnet-4", "anthropic"),
+        ("gemini-2.5-pro", "gemini"),
+    ],
+)
+async def test_provider_router_routes_completion_to_matching_provider(monkeypatch, model_name, provider_key):
+    router = ProviderRouter()
+    calls: list[tuple[str, str]] = []
+
+    async def fake_budget_snapshot(metadata):
+        return {
+            "cap_usd": 0.0,
+            "current_spend_usd": 0.0,
+            "remaining_usd": 0.0,
+            "utilization": 0.0,
+            "window_started_at": "2026-04-11T00:00:00+00:00",
+            "enforced": False,
+        }
+
+    async def fake_record_completion(*, request, result):
+        return 0.0
+
+    monkeypatch.setattr(router.usage, "budget_snapshot", fake_budget_snapshot)
+    monkeypatch.setattr(router.usage, "record_completion", fake_record_completion)
+
+    for key in ("openai", "anthropic", "gemini"):
+        async def fake_complete(request, *, _key=key):
+            calls.append((_key, request.model))
+            return CompletionResult(
+                content=f"{_key} handled the request",
+                model=request.model,
+                provider=_key,
+            )
+
+        monkeypatch.setattr(router.providers[key], "complete", fake_complete)
+
+    result = await router.complete(
+        model_name,
+        "You are helpful.",
+        "Respond concisely.",
+        metadata={"workspace_id": "00000000-0000-0000-0000-000000000001"},
+    )
+
+    assert result.provider == provider_key
+    assert calls == [(provider_key, model_name)]

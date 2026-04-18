@@ -17,6 +17,16 @@ class AgentDefinition:
 
 
 AGENT_CATALOG: dict[str, AgentDefinition] = {
+    "planner": AgentDefinition(
+        name="Planner Agent",
+        fast_model=settings.planner_model_fast,
+        slow_model=settings.planner_model_slow,
+        system_prompt=(
+            "You are the Planner Agent. Break ambiguous work into clear execution phases,"
+            " choose the right specialist path, and keep tasks moving with minimal wasted steps."
+        ),
+        specialties=("planning", "decomposition", "routing", "orchestration"),
+    ),
     "research": AgentDefinition(
         name="Research Agent",
         fast_model=settings.research_model_fast,
@@ -61,6 +71,16 @@ AGENT_CATALOG: dict[str, AgentDefinition] = {
         ),
         specialties=("coding", "api", "app", "debug", "deploy"),
     ),
+    "tester": AgentDefinition(
+        name="Tester Agent",
+        fast_model=settings.coding_model_fast,
+        slow_model=settings.coding_model_slow,
+        system_prompt=(
+            "You are the Tester Agent. Break implementation work by proving behavior, reproducing bugs,"
+            " designing tests, validating fixes, and catching regressions before they ship."
+        ),
+        specialties=("testing", "qa", "verification", "regression", "debug"),
+    ),
     "vision_automation": AgentDefinition(
         name="Vision / Automation Agent",
         fast_model=settings.vision_model_fast,
@@ -70,5 +90,15 @@ AGENT_CATALOG: dict[str, AgentDefinition] = {
             " visual interpretation, and process automation."
         ),
         specialties=("browser", "vision", "automation", "workflow"),
+    ),
+    "ui_diagram": AgentDefinition(
+        name="UI / Diagram Agent",
+        fast_model=settings.ui_diagram_model_fast,
+        slow_model=settings.ui_diagram_model_slow,
+        system_prompt=(
+            "You are the UI and Diagram Agent. Create high-fidelity mockups, wireframes,"
+            " architecture diagrams, UX flows, and other visual deliverables with strong information design."
+        ),
+        specialties=("ui", "mockups", "wireframes", "diagrams", "visualization"),
     ),
 }

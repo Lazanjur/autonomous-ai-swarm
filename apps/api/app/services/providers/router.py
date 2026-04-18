@@ -9,7 +9,11 @@ from app.core.config import get_settings
 from app.core.request_context import get_runtime_request_context
 from app.services.ops import ops_telemetry
 from app.services.providers.alibaba import AlibabaCompatibleProvider
+from app.services.providers.anthropic import AnthropicProvider
 from app.services.providers.base import CompletionRequest, CompletionResult, EmbeddingRequest, EmbeddingResult
+from app.services.providers.catalog import infer_provider_key
+from app.services.providers.gemini import GeminiProvider
+from app.services.providers.openai_provider import OpenAIProvider
 from app.services.usage import UsageAccountingService
 
 settings = get_settings()
@@ -72,7 +76,12 @@ class MockLocalProvider:
 
 class ProviderRouter:
     def __init__(self) -> None:
-        self.alibaba = AlibabaCompatibleProvider()
+        self.providers: dict[str, Any] = {
+            "alibaba": AlibabaCompatibleProvider(),
+            "openai": OpenAIProvider(),
+            "anthropic": AnthropicProvider(),
+            "gemini": GeminiProvider(),
+        }
         self.mock = MockLocalProvider()
         self.usage = UsageAccountingService()
 
@@ -116,8 +125,9 @@ class ProviderRouter:
             await self._record_completion_usage(request, result, budget=budget)
             return result
 
+        provider_key = self._resolve_provider_key(request.model)
         try:
-            result = await self.alibaba.complete(request)
+            result = await self._complete_with_provider(provider_key, request)
         except Exception as exc:
             ops_telemetry.record_alert(
                 level="warning",
@@ -126,6 +136,7 @@ class ProviderRouter:
                 context={
                     "request_id": get_runtime_request_context().request_id,
                     "model": model,
+                    "provider": provider_key,
                     "error": f"{exc.__class__.__name__}: {exc}",
                 },
             )
@@ -172,8 +183,9 @@ class ProviderRouter:
             await self._record_embedding_usage(request, result, budget=budget)
             return result
 
+        provider_key = self._resolve_provider_key(request.model)
         try:
-            result = await self.alibaba.embed(request)
+            result = await self._embed_with_provider(provider_key, request)
         except Exception as exc:
             ops_telemetry.record_alert(
                 level="warning",
@@ -182,6 +194,7 @@ class ProviderRouter:
                 context={
                     "request_id": get_runtime_request_context().request_id,
                     "model": request.model,
+                    "provider": provider_key,
                     "error": f"{exc.__class__.__name__}: {exc}",
                 },
             )
@@ -286,3 +299,30 @@ class ProviderRouter:
                     "threshold": settings.provider_budget_alert_threshold,
                 },
             )
+
+    def _resolve_provider_key(self, model: str) -> str:
+        provider_key = infer_provider_key(model)
+        return provider_key if provider_key in self.providers else "alibaba"
+
+    async def _complete_with_provider(
+        self,
+        provider_key: str,
+        request: CompletionRequest,
+    ) -> CompletionResult:
+        provider = self.providers.get(provider_key)
+        if provider is None:
+            raise RuntimeError(f"No provider is registered for key `{provider_key}`.")
+        return await provider.complete(request)
+
+    async def _embed_with_provider(
+        self,
+        provider_key: str,
+        request: EmbeddingRequest,
+    ) -> EmbeddingResult:
+        provider = self.providers.get(provider_key)
+        if provider is None:
+            raise RuntimeError(f"No provider is registered for key `{provider_key}`.")
+        embed = getattr(provider, "embed", None)
+        if embed is None:
+            raise RuntimeError(f"Provider `{provider_key}` does not support embeddings.")
+        return await embed(request)
