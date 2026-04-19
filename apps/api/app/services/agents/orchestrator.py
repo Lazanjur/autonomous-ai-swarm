@@ -378,6 +378,7 @@ class SupervisorOrchestrator:
             content=synthesis.content,
             step_results=step_results,
             scratchpad=scratchpad,
+            memory_context=memory_context,
         )
         if self._should_replace_with_grounding_clarification(prompt, citations, step_results):
             final_response = self._build_uncertainty_response(prompt)
@@ -721,13 +722,90 @@ class SupervisorOrchestrator:
                     "statuses": {"research": "completed"},
                 },
             )
+            follow_up_options = self._build_follow_up_options(
+                prompt,
+                [step_result],
+                memory_context=memory_context,
+            )
             return {
                 "plan": [asdict(task)],
                 "execution_batches": [["research"]],
                 "steps": [step_result],
-                "final_response": final_response,
+                "final_response": f"{final_response}\n\n{self._format_follow_up_section(follow_up_options)}",
                 "summary": self._summarize([step_result]),
                 "citations": [],
+                "scratchpad": self._scratchpad_view(scratchpad),
+            }
+        direct_fast_answer = self._build_direct_fast_factual_answer(prompt, tool_result, citations)
+        if direct_fast_answer:
+            final_response = self._ensure_citation_references(direct_fast_answer, citations)
+            grounded_citations = self._finalize_citations(final_response, citations)
+
+            step_result = provisional_step | {
+                "content": final_response,
+                "model": "system",
+                "provider": "system",
+                "fallback": False,
+                "summary": self._compact_summary(final_response),
+            }
+            self._update_scratchpad(scratchpad, step_result)
+            await self._emit(
+                event_handler,
+                "scratchpad.updated",
+                {
+                    "step_index": 0,
+                    "agent_key": "research",
+                    "scratchpad": self._scratchpad_view(scratchpad),
+                },
+            )
+            await self._emit(
+                event_handler,
+                "step.completed",
+                {
+                    "step_index": 0,
+                    "batch_index": 0,
+                    "agent_key": "research",
+                    "agent_name": AGENT_CATALOG["research"].name,
+                    "status": "completed",
+                    "dependencies": [],
+                    "execution_mode": "parallel",
+                    "confidence": step_result["confidence"],
+                    "validation": step_result["validation"],
+                    "summary": self._compact_summary(final_response),
+                    "model": "system",
+                    "provider": "system",
+                    "attempt_count": 1,
+                    "replan_count": 0,
+                    "tool_loop": step_result["tool_loop"],
+                    "tools": [
+                        {
+                            "tool": tool_result.get("tool") or "web_search",
+                            "status": tool_result.get("status", "completed"),
+                        }
+                    ],
+                },
+            )
+            await self._emit(
+                event_handler,
+                "batch.completed",
+                {
+                    "batch_index": 0,
+                    "tasks": ["research"],
+                    "statuses": {"research": "completed"},
+                },
+            )
+            follow_up_options = self._build_follow_up_options(
+                prompt,
+                [step_result],
+                memory_context=memory_context,
+            )
+            return {
+                "plan": [asdict(task)],
+                "execution_batches": [["research"]],
+                "steps": [step_result],
+                "final_response": f"{final_response}\n\n{self._format_follow_up_section(follow_up_options)}",
+                "summary": self._summarize([step_result]),
+                "citations": grounded_citations,
                 "scratchpad": self._scratchpad_view(scratchpad),
             }
         synthesis = await self.router.complete(
@@ -806,11 +884,16 @@ class SupervisorOrchestrator:
             },
         )
 
+        follow_up_options = self._build_follow_up_options(
+            prompt,
+            [step_result],
+            memory_context=memory_context,
+        )
         return {
             "plan": [asdict(task)],
             "execution_batches": [["research"]],
             "steps": [step_result],
-            "final_response": final_response,
+            "final_response": f"{final_response}\n\n{self._format_follow_up_section(follow_up_options)}",
             "summary": self._summarize([step_result]),
             "citations": grounded_citations,
             "scratchpad": self._scratchpad_view(scratchpad),
@@ -2306,6 +2389,59 @@ class SupervisorOrchestrator:
             "When the answer depends on evidence, include the relevant source IDs inline like [S1]."
         )
 
+    def _build_direct_fast_factual_answer(
+        self,
+        prompt: str,
+        tool_result: dict[str, Any],
+        citations: list[dict[str, Any]],
+    ) -> str | None:
+        results = tool_result.get("results")
+        if not isinstance(results, list) or not results:
+            return None
+
+        focus_tokens = list(dict.fromkeys(self._focus_tokens(prompt)))
+        if not focus_tokens:
+            return None
+
+        fragments: list[str] = []
+        used_source_ids: list[str] = []
+        for item in results[:3]:
+            if not isinstance(item, dict):
+                continue
+            snippet = " ".join(str(item.get("snippet") or "").split())
+            if not snippet:
+                continue
+            normalized_snippet = self._normalize_match_text(snippet)
+            token_hits = sum(1 for token in focus_tokens if token in normalized_snippet)
+            if token_hits == 0:
+                continue
+            source_id = str(item.get("source_id") or "").strip()
+            sentence = self._first_sentence(snippet)
+            if not sentence:
+                continue
+            sentence = sentence.rstrip(". ")
+            if source_id:
+                sentence = f"{sentence}. [{source_id}]"
+            else:
+                sentence = f"{sentence}."
+            if sentence not in fragments:
+                fragments.append(sentence)
+                if source_id:
+                    used_source_ids.append(source_id)
+            if len(fragments) >= 2:
+                break
+
+        if not fragments:
+            return None
+
+        answer = " ".join(fragments)
+        if not self._extract_citation_reference_ids(answer) and citations:
+            answer = self._ensure_citation_references(answer, citations)
+        supported = self._finalize_citations(answer, citations)
+        if not self._citations_support_prompt(prompt, supported):
+            return None
+        return answer
+
     def _select_agent_keys(self, prompt: str) -> list[str]:
         lowered = prompt.lower()
         if self._looks_like_fast_factual_question(prompt):
@@ -2824,6 +2960,7 @@ class SupervisorOrchestrator:
         content: str,
         step_results: list[dict[str, Any]],
         scratchpad: ExecutionScratchpad,
+        memory_context: dict[str, Any] | None = None,
     ) -> str:
         answer_body = content.strip() or (
             "I completed the run, but the final synthesis came back empty. The safest next move is to rerun the task or"
@@ -2846,6 +2983,7 @@ class SupervisorOrchestrator:
             prompt,
             step_results,
             notebooklm_used=bool(notebooklm_summary),
+            memory_context=memory_context,
         )
 
         return (
@@ -3099,11 +3237,23 @@ class SupervisorOrchestrator:
         step_results: list[dict[str, Any]],
         *,
         notebooklm_used: bool = False,
+        memory_context: dict[str, Any] | None = None,
     ) -> list[str]:
         lowered_prompt = prompt.lower()
         agent_keys = {str(step.get("agent_key") or "") for step in step_results}
         explanatory_request = self._looks_like_structured_explanation_request(prompt)
         code_explanation_request = self._looks_like_code_explanation_request(prompt)
+        thread_context = self._collect_follow_up_thread_context(memory_context)
+        subject = (
+            self._extract_follow_up_subject(prompt)
+            or self._extract_follow_up_subject_from_context(thread_context)
+        )
+        answer_text = "\n".join(str(step.get("content") or "") for step in step_results).strip()
+        tool_names = {
+            str(tool.get("tool") or "")
+            for step in step_results
+            for tool in step.get("tools", [])
+        }
 
         if notebooklm_used:
             return [
@@ -3111,6 +3261,9 @@ class SupervisorOrchestrator:
                 "Turn the generated output into a companion asset, like a slide deck, quiz, or flashcard set.",
                 "Audit the result against the source material and tighten gaps, citations, or missing sections.",
             ]
+
+        if self._looks_like_action_request(prompt, step_results):
+            return self._build_action_follow_up_options(prompt, step_results, subject=subject)
 
         if (not explanatory_request or code_explanation_request) and ("coding" in agent_keys or any(
             token in lowered_prompt
@@ -3120,6 +3273,33 @@ class SupervisorOrchestrator:
                 "Turn this answer into an implementation plan with concrete steps, files, and priorities.",
                 "Pressure-test the solution by reviewing edge cases, failure modes, and testing strategy.",
                 "Convert the recommendation into code, pseudocode, or a ready-to-ship technical spec.",
+            ]
+
+        if explanatory_request:
+            return self._build_explanation_follow_up_options(prompt, subject=subject)
+
+        if self._looks_like_person_question(prompt, answer_text):
+            target = subject or "this person"
+            return [
+                f"Trace {target}'s timeline, background, and key milestones in more detail.",
+                f"Map {target}'s affiliations, relationships, and broader historical or professional context.",
+                f"Turn this profile of {target} into a concise bio, briefing, or fact sheet.",
+            ]
+
+        if self._looks_like_place_question(prompt, answer_text):
+            target = subject or "this place"
+            return [
+                f"Expand this into the history, institutions, and defining facts about {target}.",
+                f"Compare {target} with related places, regions, or periods to add context.",
+                f"Turn this into a concise travel, policy, or background briefing on {target}.",
+            ]
+
+        if self._looks_like_organization_question(prompt, answer_text):
+            target = subject or "this organization"
+            return [
+                f"Go deeper on what {target} does, who leads it, and how it is positioned.",
+                f"Map the key stakeholders, partners, risks, and opportunities around {target}.",
+                f"Turn this into a concise company, institution, or market briefing on {target}.",
             ]
 
         if "research" in agent_keys or any(
@@ -3142,11 +3322,127 @@ class SupervisorOrchestrator:
                 "Turn the answer into a concrete action plan with milestones and owners.",
             ]
 
+        if "web_search" in tool_names or "research" in agent_keys:
+            target = subject or "this topic"
+            return [
+                f"Find stronger primary sources and more precise evidence on {target}.",
+                f"Expand {target} into a clearer timeline, context map, and key implications.",
+                f"Turn the findings on {target} into a concise briefing, comparison, or memo.",
+            ]
+
         return [
             "Go deeper on the evidence, assumptions, or sources behind this answer.",
             "Explore alternatives, risks, and edge cases around this topic.",
             "Turn this into a practical next-step plan, checklist, or deliverable.",
         ]
+
+    def _build_action_follow_up_options(
+        self,
+        prompt: str,
+        step_results: list[dict[str, Any]],
+        *,
+        subject: str | None,
+    ) -> list[str]:
+        lowered_prompt = prompt.lower()
+        tool_names = {
+            str(tool.get("tool") or "")
+            for step in step_results
+            for tool in step.get("tools", [])
+        }
+        if "browser_automation" in tool_names or "vision_automation" in {
+            str(step.get("agent_key") or "") for step in step_results
+        }:
+            target = subject or "this browser task"
+            return [
+                f"Continue from the current browser state and take the next step on {target}.",
+                f"Capture the result as a screenshot, structured extract, or short status summary.",
+                f"Tell me the next page, action, or workflow you want completed on {target}.",
+            ]
+        if "coding" in {str(step.get("agent_key") or "") for step in step_results}:
+            return [
+                "Review the implementation changes file by file and explain what changed.",
+                "Run the next verification step, test pass, or bug-fix cycle on this work.",
+                "Turn the current result into a commit-ready summary, patch, or rollout plan.",
+            ]
+        target = subject or "this task"
+        return [
+            f"Continue from the current result and take the next concrete step on {target}.",
+            f"Check the output, edge cases, or evidence behind the completed step for {target}.",
+            f"Turn the current state of {target} into a concise summary, checklist, or deliverable.",
+        ]
+
+    def _build_explanation_follow_up_options(self, prompt: str, *, subject: str | None) -> list[str]:
+        target = subject or "this system"
+        return [
+            f"Break {target} down into components, data flow, and responsibilities.",
+            f"Pressure-test {target} by reviewing failure modes, edge cases, and testing strategy.",
+            f"Turn the explanation of {target} into implementation steps, docs, or a technical spec.",
+        ]
+
+    def _collect_follow_up_thread_context(self, memory_context: dict[str, Any] | None) -> list[str]:
+        if not isinstance(memory_context, dict):
+            return []
+
+        snippets: list[str] = []
+        for memory_key in ("task_memory", "project_memory"):
+            memory_bucket = memory_context.get(memory_key)
+            if not isinstance(memory_bucket, dict):
+                continue
+            for list_key in ("recent_requests", "recent_summaries", "focus_areas"):
+                for item in memory_bucket.get(list_key, []) or []:
+                    text = " ".join(str(item).split()).strip()
+                    if text:
+                        snippets.append(text)
+        return list(dict.fromkeys(snippets))
+
+    def _extract_follow_up_subject_from_context(self, context_items: Sequence[str]) -> str | None:
+        for item in context_items:
+            subject = self._extract_follow_up_subject(item)
+            if subject:
+                return subject
+        return None
+
+    def _extract_follow_up_subject(self, prompt: str) -> str | None:
+        cleaned = " ".join(str(prompt or "").strip().split())
+        if not cleaned:
+            return None
+        patterns = (
+            r"^(?:who|what|when|where|why|how)\s+(?:is|are|was|were)\s+(.+?)\??$",
+            r"^(?:tko|sto|šta|kada|gdje|zasto|zašto|kako)\s+(?:je|su)\s+(.+?)\??$",
+            r"^(?:explain|describe|summarize)\s+(.+?)\??$",
+            r"^(?:open|show|build|create|write|generate|fix|review|analyze|analyse)\s+(.+?)\.?$",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, cleaned, flags=re.IGNORECASE)
+            if match:
+                candidate = match.group(1).strip(" .?!")
+                if candidate:
+                    return candidate
+        return None
+
+    def _looks_like_person_question(self, prompt: str, answer_text: str) -> bool:
+        lowered_prompt = self._normalize_match_text(prompt)
+        lowered_answer = self._normalize_match_text(answer_text)
+        return (
+            lowered_prompt.startswith(("who is", "who was", "tko je", "tko je bio"))
+            or any(marker in lowered_answer for marker in ("born", "died", "professor", "leader", "musicologist"))
+        )
+
+    def _looks_like_place_question(self, prompt: str, answer_text: str) -> bool:
+        lowered_prompt = self._normalize_match_text(prompt)
+        lowered_answer = self._normalize_match_text(answer_text)
+        return (
+            lowered_prompt.startswith(("where is", "what is", "gdje je", "sto je", "šta je"))
+            and any(marker in lowered_answer for marker in ("city", "country", "capital", "region", "population"))
+        )
+
+    def _looks_like_organization_question(self, prompt: str, answer_text: str) -> bool:
+        lowered_prompt = self._normalize_match_text(prompt)
+        lowered_answer = self._normalize_match_text(answer_text)
+        org_markers = ("company", "organization", "institution", "academy", "university", "firm", "agency")
+        return any(marker in lowered_prompt for marker in org_markers) or any(
+            marker in lowered_answer for marker in org_markers
+        )
 
     def _looks_like_code_explanation_request(self, prompt: str) -> bool:
         lowered = self._normalize_match_text(prompt)
@@ -3372,6 +3668,15 @@ class SupervisorOrchestrator:
             if token in line.lower():
                 lines.append(line)
         return lines[:3]
+
+    def _first_sentence(self, content: str) -> str:
+        text = " ".join(content.split()).strip()
+        if not text:
+            return ""
+        match = re.search(r"(.+?[.!?])(?:\s|$)", text)
+        if match:
+            return match.group(1).strip()
+        return text
 
     def _compact_summary(self, value: str, limit: int = 220) -> str:
         compact = " ".join(value.split())

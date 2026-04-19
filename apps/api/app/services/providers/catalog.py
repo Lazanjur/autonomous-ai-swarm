@@ -491,4 +491,20 @@ def build_role_model_catalog() -> list[dict[str, Any]]:
         for model_name in role_payload.values():
             if model_name and model_name not in models:
                 models.append(model_name)
-    return [get_model_capability(model_name) for model_name in models]
+
+    for model_name, capability in KNOWN_MODEL_CAPABILITIES.items():
+        if capability.supports_embeddings:
+            continue
+        if model_name not in models:
+            models.append(model_name)
+
+    catalog = [get_model_capability(model_name) for model_name in models]
+    catalog.sort(
+        key=lambda capability: (
+            0 if capability["name"] == "qwen3.5-flash" else 1,
+            0 if capability["configured"] else 1,
+            capability["provider_label"],
+            capability["name"],
+        )
+    )
+    return catalog

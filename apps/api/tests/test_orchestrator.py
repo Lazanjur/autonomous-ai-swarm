@@ -101,6 +101,82 @@ async def test_orchestrator_answers_self_working_question_in_bcs_without_executi
     assert result["final_response"].startswith("Radim tako da razumijem cilj")
 
 
+@pytest.mark.asyncio
+async def test_fast_factual_answers_always_include_follow_up_options():
+    orchestrator = SupervisorOrchestrator()
+
+    async def fake_execute_named(*args, **kwargs):
+        return {
+            "tool": "web_search",
+            "status": "completed",
+            "results": [
+                {
+                    "title": "Matija Gubec - Wikipedia",
+                    "url": "https://example.com/matija-gubec",
+                    "snippet": "Matija Gubec was a Croatian peasant revolt leader.",
+                    "source_id": "S1",
+                }
+            ],
+        }
+
+    async def fake_complete(*args, **kwargs):
+        return SimpleNamespace(
+            content="Matija Gubec was the leader of the Croatian-Slovene Peasant Revolt of 1573. [S1]",
+            model="qwen3.5-flash",
+            provider="qwen",
+            fallback=False,
+        )
+
+    orchestrator.tools.execute_named = fake_execute_named
+    orchestrator.router.complete = fake_complete
+
+    result = await orchestrator._maybe_execute_fast_factual_question("Who is Matija Gubec?")
+
+    assert result is not None
+    assert "How to continue:" in result["final_response"]
+    assert "1. **" in result["final_response"]
+    assert "2. **" in result["final_response"]
+    assert "3. **" in result["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_fast_factual_uses_direct_grounded_snippet_answer_when_possible():
+    orchestrator = SupervisorOrchestrator()
+
+    async def fake_execute_named(*args, **kwargs):
+        return {
+            "tool": "web_search",
+            "status": "completed",
+            "results": [
+                {
+                    "title": "Hana Breko Kustura - HAZU",
+                    "url": "https://example.com/hazu/hana-breko-kustura",
+                    "snippet": "Hana Breko Kustura is a Croatian musicologist and Senior Research Advisor at the Croatian Academy of Sciences and Arts.",
+                    "source_id": "S1",
+                },
+                {
+                    "title": "Academy of Music Zagreb",
+                    "url": "https://example.com/academy/hana-breko-kustura",
+                    "snippet": "She also teaches at the Academy of Music, University of Zagreb.",
+                    "source_id": "S2",
+                },
+            ],
+        }
+
+    async def fail_complete(*args, **kwargs):
+        raise AssertionError("router.complete should not be called for direct fast factual answers")
+
+    orchestrator.tools.execute_named = fake_execute_named
+    orchestrator.router.complete = fail_complete
+
+    result = await orchestrator._maybe_execute_fast_factual_question("Who is Hana Breko Kustura?")
+
+    assert result is not None
+    assert "Hana Breko Kustura is a Croatian musicologist" in result["final_response"]
+    assert "[S1]" in result["final_response"]
+    assert "How to continue:" in result["final_response"]
+
+
 def test_orchestrator_formats_follow_up_section_with_plain_heading_and_bold_numbered_items():
     orchestrator = SupervisorOrchestrator()
 
@@ -110,6 +186,66 @@ def test_orchestrator_formats_follow_up_section_with_plain_heading_and_bold_numb
     assert "1. **Prva opcija**" in formatted
     assert "2. **Druga opcija**" in formatted
     assert "3. **Treća opcija**" in formatted
+
+
+def test_follow_up_options_for_person_question_are_subject_specific():
+    orchestrator = SupervisorOrchestrator()
+
+    options = orchestrator._build_follow_up_options(
+        "Who is Hana Breko Kustura?",
+        [
+            {
+                "agent_key": "research",
+                "content": "Hana Breko Kustura is a Croatian musicologist and professor.",
+                "tools": [{"tool": "web_search", "status": "completed"}],
+            }
+        ],
+    )
+
+    assert "Hana Breko Kustura" in options[0]
+    assert "profile" in options[2].lower() or "bio" in options[2].lower()
+
+
+def test_follow_up_options_for_structured_explanation_are_subject_specific():
+    orchestrator = SupervisorOrchestrator()
+
+    options = orchestrator._build_follow_up_options(
+        "Explain this API in a structured way with headings and bullets.",
+        [
+            {
+                "agent_key": "content",
+                "content": "This API handles authentication, uploads, and search.",
+                "tools": [],
+            }
+        ],
+    )
+
+    assert "api" in options[0].lower()
+    assert "testing strategy" in options[1].lower()
+
+
+def test_follow_up_options_use_recent_thread_context_when_current_prompt_is_generic():
+    orchestrator = SupervisorOrchestrator()
+
+    options = orchestrator._build_follow_up_options(
+        "What about her affiliations?",
+        [
+            {
+                "agent_key": "research",
+                "content": "She is affiliated with HAZU and the Academy of Music in Zagreb.",
+                "tools": [{"tool": "web_search", "status": "completed"}],
+            }
+        ],
+        memory_context={
+            "task_memory": {
+                "recent_requests": ["Who is Hana Breko Kustura?"],
+                "recent_summaries": ["Profile of Hana Breko Kustura and her work in musicology."],
+            }
+        },
+    )
+
+    assert "Hana Breko Kustura" in options[0]
+    assert "Hana Breko Kustura" in options[1]
 
 
 def test_orchestrator_execution_batches_respect_dependencies():

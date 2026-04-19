@@ -2,6 +2,7 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import Image from "next/image";
+import { createPortal } from "react-dom";
 import {
   CSSProperties,
   FormEvent,
@@ -96,6 +97,13 @@ type WorkbenchViewMode = "edit" | "local-diff" | "repo-diff";
 type TerminalStreamMode = "combined" | "stdout" | "stderr";
 type ArtifactPreviewMode = "image" | "frame" | "none";
 type OperatingFlowStageStatus = "idle" | "active" | "complete";
+type ModelMenuState = "closed" | "open";
+
+type ModelMenuGeometry = {
+  top: number;
+  left: number;
+  width: number;
+};
 
 type WorkbenchEditorState = {
   file: ChatWorkbenchFileData;
@@ -245,11 +253,114 @@ type ModelProfileOption = {
   configured: boolean;
 };
 
+const COMPOSER_ATTACHMENT_ACCEPT = [
+  ".txt",
+  ".md",
+  ".mdx",
+  ".rst",
+  ".log",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".rtf",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx",
+  ".csv",
+  ".tsv",
+  ".json",
+  ".jsonl",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".ini",
+  ".cfg",
+  ".conf",
+  ".env",
+  ".properties",
+  ".html",
+  ".htm",
+  ".odt",
+  ".ods",
+  ".odp",
+  ".epub",
+  ".ipynb",
+  ".py",
+  ".js",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".java",
+  ".c",
+  ".cpp",
+  ".cc",
+  ".cxx",
+  ".h",
+  ".hpp",
+  ".cs",
+  ".go",
+  ".rs",
+  ".rb",
+  ".php",
+  ".swift",
+  ".kt",
+  ".kts",
+  ".scala",
+  ".sql",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".ps1",
+  ".bat",
+  ".cmd",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".svg",
+  ".bmp",
+  ".tif",
+  ".tiff",
+  ".ico",
+  ".heic",
+  ".mp3",
+  ".wav",
+  ".m4a",
+  ".aac",
+  ".ogg",
+  ".flac",
+  ".mp4",
+  ".mov",
+  ".avi",
+  ".mkv",
+  ".webm",
+  ".zip",
+  ".7z",
+  ".rar",
+  ".tar",
+  ".gz",
+  ".tgz",
+].join(",");
+
+const COMPOSER_ATTACHMENT_FAMILY_LABEL =
+  "Documents, spreadsheets, presentations, code, images, audio, video, notebooks, config files, and archives.";
+
+type ModelProfileGroup = {
+  key: string;
+  label: string;
+  options: ModelProfileOption[];
+};
+
 const PREMIUM_TEMPLATE_KEYS = new Set([
   "autonomous_app_builder",
   "live_debugging_assistant",
   "team_delivery_swarm"
 ]);
+
+const NOTEBOOKLM_MODEL_PROFILE = "notebooklm";
 
 const EXECUTION_TARGET_OS_OPTIONS = [
   { value: "", label: "Auto OS" },
@@ -480,11 +591,19 @@ function buildModelProfileOptions(chatAgents?: ChatAgentsData): ModelProfileOpti
         menuLabel: "Qwen3.5 Flash — Auto swarm orchestration",
         description: "Auto swarm orchestration for this task",
         configured: true
+      },
+      {
+        value: NOTEBOOKLM_MODEL_PROFILE,
+        label: "NotebookLM",
+        menuLabel: "NotebookLM — Reports, flashcards, quizzes, slide decks",
+        description:
+          "NotebookLM-first for reports, flashcards, quizzes, slide decks, mind maps, and other native deliverables",
+        configured: true
       }
     ];
   }
 
-  return catalog.map((model) => {
+  const options = catalog.map((model) => {
     const modelLabel = formatModelLabel(model.name);
     if (model.name === "qwen3.5-flash") {
       return {
@@ -509,6 +628,48 @@ function buildModelProfileOptions(chatAgents?: ChatAgentsData): ModelProfileOpti
       configured: model.configured
     };
   });
+
+  options.push({
+    value: NOTEBOOKLM_MODEL_PROFILE,
+    label: "NotebookLM",
+    menuLabel: "NotebookLM — Reports, flashcards, quizzes, slide decks",
+    description:
+      "NotebookLM-first for reports, flashcards, quizzes, slide decks, mind maps, and other native deliverables",
+    configured: true
+  });
+
+  return options;
+}
+
+function groupModelProfileOptions(options: ModelProfileOption[]): ModelProfileGroup[] {
+  const qwenOptions = options.filter((option) => option.value.startsWith("qwen"));
+  const notebooklmOptions = options.filter((option) => option.value === NOTEBOOKLM_MODEL_PROFILE);
+  const otherOptions = options.filter(
+    (option) => !option.value.startsWith("qwen") && option.value !== NOTEBOOKLM_MODEL_PROFILE
+  );
+  const groups: ModelProfileGroup[] = [];
+  if (qwenOptions.length > 0) {
+    groups.push({
+      key: "qwen",
+      label: "Qwen models used by Intmatrix",
+      options: qwenOptions
+    });
+  }
+  if (notebooklmOptions.length > 0) {
+    groups.push({
+      key: "notebooklm",
+      label: "NotebookLM",
+      options: notebooklmOptions
+    });
+  }
+  if (otherOptions.length > 0) {
+    groups.push({
+      key: "other",
+      label: "Other available models",
+      options: otherOptions
+    });
+  }
+  return groups;
 }
 
 function statusLabel(status: string) {
@@ -2896,7 +3057,8 @@ export function ChatWorkspace({
     initialRunStepById,
     initialScopedRuns[0]?.id ?? null
   );
-  const modelProfileOptions = useMemo(() => buildModelProfileOptions(chatAgents), [chatAgents]);
+  const [chatAgentsState, setChatAgentsState] = useState(chatAgents);
+  const modelProfileOptions = useMemo(() => buildModelProfileOptions(chatAgentsState), [chatAgentsState]);
   const [threads, setThreads] = useState(data.threads);
   const [selectedProject, setSelectedProject] = useState(data.selected_project ?? null);
   const [taskMemory, setTaskMemory] = useState<SharedMemory | null>(data.task_memory ?? null);
@@ -3004,6 +3166,9 @@ export function ChatWorkspace({
   const [takeoverNotes, setTakeoverNotes] = useState<Record<string, string>>({});
   const [headerError, setHeaderError] = useState<string | null>(null);
   const [headerNotice, setHeaderNotice] = useState<string | null>(null);
+  const [modelMenuState, setModelMenuState] = useState<ModelMenuState>("closed");
+  const [modelMenuGeometry, setModelMenuGeometry] = useState<ModelMenuGeometry | null>(null);
+  const [pendingModelProfiles, setPendingModelProfiles] = useState<Record<string, string>>({});
   const [inviteEmail, setInviteEmail] = useState("");
   const [threadTitleDraft, setThreadTitleDraft] = useState("");
   const [threadStatusDraft, setThreadStatusDraft] = useState("active");
@@ -3017,6 +3182,8 @@ export function ChatWorkspace({
   const [isResizingWorkspace, setIsResizingWorkspace] = useState(false);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(initialSelectedThreadId);
   const workspaceShellRef = useRef<HTMLElement | null>(null);
+  const modelMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const modelMenuPanelRef = useRef<HTMLDivElement | null>(null);
   const composerFileInputRef = useRef<HTMLInputElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const copiedMessageTimeoutRef = useRef<number | null>(null);
@@ -3033,6 +3200,7 @@ export function ChatWorkspace({
   const pendingRunSyncThreadIdRef = useRef<string | null>(null);
   const liveStreamActiveRef = useRef(false);
   const replayRequestRef = useRef<string | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const syncThreadInUrlRef = useRef<((threadId: string | null) => void) | null>(null);
   const submitRunMessageRef = useRef<((messageInput: string) => Promise<void>) | null>(null);
   const createThreadActionRef = useRef<(() => Promise<void>) | null>(null);
@@ -3045,6 +3213,98 @@ export function ChatWorkspace({
   const workspaceId = data.workspace_id;
   const currentProjectId = searchParams.get("project");
   const prefersReducedMotion = useReducedMotion();
+  const modelSelectionScope = currentThreadId ?? "__draft__";
+  const pendingModelProfile = pendingModelProfiles[modelSelectionScope] ?? null;
+
+  useEffect(() => {
+    setChatAgentsState(chatAgents);
+  }, [chatAgents]);
+
+  useEffect(() => {
+    const catalogCount = chatAgentsState?.model_catalog?.length ?? 0;
+    if (catalogCount > 1) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function refreshChatAgents() {
+      try {
+        const response = await fetch(`/api/chat/agents?workspace_id=${data.workspace_id}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          return;
+        }
+        const payload = (await response.json()) as ChatAgentsData;
+        if (cancelled) {
+          return;
+        }
+        if (Array.isArray(payload.model_catalog) && payload.model_catalog.length > 0) {
+          setChatAgentsState(payload);
+        }
+      } catch {
+        // Keep the existing fallback if the catalog refresh is unavailable.
+      }
+    }
+
+    void refreshChatAgents();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatAgentsState?.model_catalog?.length, data.workspace_id]);
+
+  useEffect(() => {
+    if (modelMenuState !== "open") {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (
+        !modelMenuRef.current?.contains(target) &&
+        !modelMenuPanelRef.current?.contains(target)
+      ) {
+        setModelMenuState("closed");
+      }
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [modelMenuState]);
+
+  useEffect(() => {
+    if (modelMenuState !== "open") {
+      setModelMenuGeometry(null);
+      return;
+    }
+
+    function syncModelMenuGeometry() {
+      const trigger = modelMenuButtonRef.current;
+      if (!trigger) {
+        return;
+      }
+      const rect = trigger.getBoundingClientRect();
+      const preferredWidth = Math.max(rect.width, 420);
+      const maxWidth = Math.max(320, window.innerWidth - 32);
+      const width = Math.min(preferredWidth, maxWidth);
+      const left = Math.min(Math.max(16, rect.left), window.innerWidth - width - 16);
+      const top = Math.min(rect.bottom + 10, window.innerHeight - 24);
+      setModelMenuGeometry({ top, left, width });
+    }
+
+    syncModelMenuGeometry();
+    window.addEventListener("resize", syncModelMenuGeometry);
+    window.addEventListener("scroll", syncModelMenuGeometry, true);
+
+    return () => {
+      window.removeEventListener("resize", syncModelMenuGeometry);
+      window.removeEventListener("scroll", syncModelMenuGeometry, true);
+    };
+  }, [modelMenuState]);
 
   useEffect(() => {
     if (wantsNewTask) {
@@ -3268,12 +3528,31 @@ export function ChatWorkspace({
     typeof activeThreadMetadata.model_profile === "string" &&
     modelProfileOptions.some((option) => option.value === activeThreadMetadata.model_profile)
       ? activeThreadMetadata.model_profile
-      : modelProfileOptions.find((option) => option.value === chatAgents?.supervisor_model)?.value ??
-        modelProfileOptions.find((option) => option.configured)?.value ??
-        modelProfileOptions[0]?.value ??
-        "qwen3.5-flash";
+      : pendingModelProfile && modelProfileOptions.some((option) => option.value === pendingModelProfile)
+        ? pendingModelProfile
+        : modelProfileOptions.find((option) => option.value === chatAgentsState?.supervisor_model)?.value ??
+          modelProfileOptions.find((option) => option.configured)?.value ??
+          modelProfileOptions[0]?.value ??
+          "qwen3.5-flash";
   const selectedModelOption =
     modelProfileOptions.find((option) => option.value === selectedModelProfile) ?? null;
+  const groupedModelProfileOptions = useMemo(
+    () => groupModelProfileOptions(modelProfileOptions),
+    [modelProfileOptions]
+  );
+  useEffect(() => {
+    if (!currentThreadId || typeof activeThreadMetadata.model_profile !== "string") {
+      return;
+    }
+    setPendingModelProfiles((current) => {
+      if (!current[currentThreadId]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[currentThreadId];
+      return next;
+    });
+  }, [activeThreadMetadata.model_profile, currentThreadId]);
   const activeAutonomyMode = normalizeAutonomyMode(activeThreadMetadata.autonomy_mode);
   const activeExecutionEnvironment = useMemo(
     () => normalizeExecutionEnvironment(activeThreadMetadata.execution_environment),
@@ -4774,7 +5053,26 @@ export function ChatWorkspace({
   }
 
   async function handleModelProfileChange(nextProfile: string) {
-    if (!activeThread?.id || nextProfile === selectedModelProfile) {
+    if (nextProfile === selectedModelProfile) {
+      setModelMenuState("closed");
+      return;
+    }
+    if (!activeThread?.id) {
+      setPendingModelProfiles((current) => ({
+        ...current,
+        [modelSelectionScope]: nextProfile
+      }));
+      setHeaderError(null);
+      setHeaderNotice(
+        nextProfile === "qwen3.5-flash"
+          ? "Auto swarm orchestration armed for the next task in this thread."
+          : nextProfile === NOTEBOOKLM_MODEL_PROFILE
+            ? "NotebookLM-first mode armed for the next task in this thread."
+          : `This task will start with ${
+              modelProfileOptions.find((option) => option.value === nextProfile)?.label ?? nextProfile
+            }.`
+      );
+      setModelMenuState("closed");
       return;
     }
     setHeaderActionLoading("model");
@@ -4792,12 +5090,20 @@ export function ChatWorkspace({
       setHeaderNotice(
         nextProfile === "qwen3.5-flash"
           ? "Auto swarm orchestration enabled for this task."
+          : nextProfile === NOTEBOOKLM_MODEL_PROFILE
+            ? "NotebookLM-first mode enabled for this task."
           : `Task model updated to ${profileLabel}. The next run will use it.`
       );
+      setPendingModelProfiles((current) => {
+        const next = { ...current };
+        delete next[modelSelectionScope];
+        return next;
+      });
     } catch (updateError) {
       setHeaderError(updateError instanceof Error ? updateError.message : "Model profile update failed.");
     } finally {
       setHeaderActionLoading(null);
+      setModelMenuState("closed");
     }
   }
 
@@ -5399,7 +5705,10 @@ export function ChatWorkspace({
       const payload: ChatThreadCreatePayload = {
         workspace_id: data.workspace_id,
         project_id: currentProjectId,
-        title: selectedTaskTemplate?.chat_defaults.thread_title ?? "New thread"
+        title: selectedTaskTemplate?.chat_defaults.thread_title ?? "New thread",
+        metadata: {
+          model_profile: selectedModelProfile
+        }
       };
       const response = await fetch("/api/chat/threads", {
         method: "POST",
@@ -5449,6 +5758,16 @@ export function ChatWorkspace({
       };
       setThreads((current) => upsertThread(current.filter((item) => item.id !== provisional.id), nextThread));
       setCurrentThreadId(nextThread.id);
+      setPendingModelProfiles((current) => {
+        const next = { ...current };
+        const scopedSelection = next[provisional.id] ?? next["__draft__"] ?? selectedModelProfile;
+        if (scopedSelection) {
+          next[nextThread.id] = scopedSelection;
+        }
+        delete next[provisional.id];
+        delete next["__draft__"];
+        return next;
+      });
       await refreshWorkspace(nextThread.id);
     } catch {
       setError("Thread creation is unavailable.");
@@ -5673,7 +5992,12 @@ export function ChatWorkspace({
         | DocumentUploadResponse
         | { detail?: string };
       if (!response.ok || !("documents" in payload)) {
-        setComposerError(("detail" in payload && payload.detail) || "Upload failed.");
+        const detail = ("detail" in payload && payload.detail) || "Upload failed.";
+        setComposerError(
+          detail === "Upload failed."
+            ? `Upload failed. Supported attachments include: ${COMPOSER_ATTACHMENT_FAMILY_LABEL}`
+            : detail
+        );
         return;
       }
 
@@ -5695,7 +6019,7 @@ export function ChatWorkspace({
         return [...uploadedAttachments, ...deduped];
       });
       setComposerNotice(
-        `${uploadedAttachments.length} attachment${uploadedAttachments.length === 1 ? "" : "s"} uploaded into workspace knowledge and linked to the next run.`
+        `${uploadedAttachments.length} file${uploadedAttachments.length === 1 ? "" : "s"} attached. ${COMPOSER_ATTACHMENT_FAMILY_LABEL}`
       );
     } catch {
       setComposerError("Upload service is unavailable right now.");
@@ -6213,6 +6537,9 @@ export function ChatWorkspace({
                 )
               );
             }
+            setRunning(false);
+            setCurrentRunStartedAt(null);
+            setActiveBatchIndex(null);
             return;
           }
 
@@ -6591,26 +6918,35 @@ export function ChatWorkspace({
                     : "Start a task from the rail and keep this column focused on chat."}
               </p>
             </div>
-            <div className="flex max-w-[660px] flex-wrap items-center justify-end gap-1.5">
-              <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-sm text-black/[0.68]">
+            <div className="flex w-full min-w-0 flex-nowrap items-center justify-start gap-1.5 overflow-hidden pb-1 xl:justify-end">
+              <div
+                ref={modelMenuRef}
+                className="relative inline-flex min-w-0 flex-1 items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-sm text-black/[0.68] xl:max-w-[26rem]"
+              >
                 <span className="text-[10px] uppercase tracking-[0.14em] text-black/[0.45]">Model</span>
-                <div className="flex min-w-[320px] flex-col gap-0.5">
-                  <select
-                    value={selectedModelProfile}
-                    onChange={(event) => void handleModelProfileChange(event.target.value)}
-                    disabled={!activeThread || headerActionLoading === "model"}
-                    className="appearance-none bg-transparent pr-6 text-[13px] outline-none disabled:opacity-60"
+                <div className="relative flex min-w-0 flex-1 flex-col gap-0.5">
+                  <button
+                    ref={modelMenuButtonRef}
+                    type="button"
+                    onClick={() =>
+                      setModelMenuState((current) => (current === "open" ? "closed" : "open"))
+                    }
+                    disabled={headerActionLoading === "model"}
+                    className="flex w-full min-w-0 items-center justify-between gap-3 bg-transparent text-left text-[13px] outline-none disabled:opacity-60"
                   >
-                    {modelProfileOptions.map((option) => (
-                      <option key={option.value} value={option.value} disabled={!option.configured}>
-                        {option.menuLabel}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="pr-6 text-[10px] uppercase tracking-[0.12em] text-black/[0.42]">
+                    <span className="min-w-0 truncate text-[13px] text-black/[0.8]">
+                      {selectedModelOption?.label ?? "Choose task model"}
+                    </span>
+                    <ChevronDown
+                      className={cn(
+                        "h-4 w-4 shrink-0 text-black/[0.45] transition",
+                        modelMenuState === "open" && "rotate-180"
+                      )}
+                    />
+                  </button>
+                  <span className="truncate pr-6 text-[10px] uppercase tracking-[0.12em] text-black/[0.42]">
                     {selectedModelOption?.description ?? "General"}
                   </span>
-                  <ChevronDown className="pointer-events-none absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 text-black/[0.45]" />
                 </div>
               </div>
               <button
@@ -6621,7 +6957,7 @@ export function ChatWorkspace({
                   setHeaderNotice(null);
                 }}
                 disabled={!activeThread}
-                className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
+                className="inline-flex shrink-0 items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
               >
                 <Copy className="h-3.5 w-3.5" />
                 Share
@@ -6635,7 +6971,7 @@ export function ChatWorkspace({
                 }}
                 disabled={!activeThread}
                 className={cn(
-                  "inline-flex items-center gap-2 rounded-full border px-3 py-2 text-[13px] disabled:opacity-60",
+                  "inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-[13px] disabled:opacity-60",
                   browserTakeoverRequest
                     ? "border-amber-300 bg-amber-50 text-amber-900"
                     : "border-black/10 bg-white text-black/[0.72]"
@@ -6649,7 +6985,7 @@ export function ChatWorkspace({
                   type="button"
                   onClick={() => void submitRunMessage(activeThreadReplayPrompt)}
                   disabled={!activeThread || running || isTaskPaused}
-                  className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
+                  className="inline-flex shrink-0 items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-[13px] text-black/[0.72] disabled:opacity-60"
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
                   Replay
@@ -6657,7 +6993,7 @@ export function ChatWorkspace({
               )}
               <button
                 type="button"
-                className="rounded-full bg-ink px-3.5 py-2 text-[13px] text-white"
+                className="shrink-0 rounded-full bg-ink px-3.5 py-2 text-[13px] text-white"
                 onClick={createThread}
               >
                 New
@@ -6665,7 +7001,7 @@ export function ChatWorkspace({
               <button
                 type="button"
                 onClick={toggleWorkspacePaneCollapsed}
-                className="hidden h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45 xl:inline-flex"
+                className="hidden h-11 w-11 shrink-0 items-center justify-center rounded-full border border-black/10 bg-white text-black/[0.72] transition hover:bg-sand/45 xl:inline-flex"
                 aria-label="Collapse chat workspace"
                 title="Collapse chat workspace"
               >
@@ -6673,6 +7009,62 @@ export function ChatWorkspace({
               </button>
             </div>
           </div>
+
+          {typeof document !== "undefined" && modelMenuState === "open" && modelMenuGeometry
+            ? createPortal(
+                <div
+                  ref={modelMenuPanelRef}
+                  className="fixed z-[140] overflow-hidden rounded-[18px] border border-black/10 bg-white shadow-[0_22px_60px_rgba(15,23,42,0.16)]"
+                  style={{
+                    top: modelMenuGeometry.top,
+                    left: modelMenuGeometry.left,
+                    width: modelMenuGeometry.width
+                  }}
+                >
+                  <div className="max-h-[22rem] overflow-y-auto p-2">
+                    {groupedModelProfileOptions.map((group) => (
+                      <div key={group.key} className="pb-2 last:pb-0">
+                        <div className="px-3 py-2 text-[10px] uppercase tracking-[0.16em] text-black/[0.42]">
+                          {group.label}
+                        </div>
+                        {group.options.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => void handleModelProfileChange(option.value)}
+                            className={cn(
+                              "flex w-full items-start justify-between gap-3 rounded-[14px] px-3 py-2.5 text-left transition",
+                              option.value === selectedModelProfile
+                                ? "bg-black/[0.05]"
+                                : "hover:bg-black/[0.035]",
+                              !option.configured && "opacity-70"
+                            )}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="truncate text-sm font-medium text-black/[0.82]">
+                                  {option.label}
+                                </span>
+                                {option.value === "qwen3.5-flash" ? (
+                                  <span className="rounded-full bg-black/[0.06] px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-black/[0.52]">
+                                    Auto
+                                  </span>
+                                ) : null}
+                              </div>
+                              <p className="mt-1 text-xs leading-5 text-black/[0.58]">{option.description}</p>
+                            </div>
+                            <div className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-black/[0.45]">
+                              {option.configured ? "Ready" : "Unavailable"}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>,
+                document.body
+              )
+            : null}
 
           {(headerPanel || headerError || headerNotice) && (
             <div className="absolute inset-x-0 top-full z-30 mt-3 flex justify-end">
@@ -6688,7 +7080,11 @@ export function ChatWorkspace({
                   </div>
                   <button
                     type="button"
-                    onClick={() => setHeaderPanel(null)}
+                    onClick={() => {
+                      setHeaderPanel(null);
+                      setHeaderNotice(null);
+                      setHeaderError(null);
+                    }}
                     className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-xs uppercase tracking-[0.14em] text-black/[0.6] transition hover:bg-sand/45"
                   >
                     Close
@@ -8027,6 +8423,7 @@ export function ChatWorkspace({
             ref={composerFileInputRef}
             type="file"
             multiple
+            accept={COMPOSER_ATTACHMENT_ACCEPT}
             className="hidden"
             onChange={(event) => void uploadComposerFiles(event.target.files)}
           />

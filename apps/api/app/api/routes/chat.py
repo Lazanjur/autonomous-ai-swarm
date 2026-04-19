@@ -695,6 +695,7 @@ async def create_thread(
             workspace_id=payload.workspace_id,
             project_id=payload.project_id,
             title=payload.title,
+            metadata=payload.metadata,
             actor_id=context.user.id,
         )
     except ValueError as exc:

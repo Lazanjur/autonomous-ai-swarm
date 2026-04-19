@@ -32,6 +32,7 @@ class _SessionStub:
         self._responses = responses
         self._index = 0
         self.added = []
+        self.workspace = SimpleNamespace(metadata_={})
 
     async def execute(self, _query):
         response = self._responses[self._index]
@@ -40,6 +41,12 @@ class _SessionStub:
 
     def add(self, value):
         self.added.append(value)
+
+    async def get(self, _model, _id):
+        return self.workspace
+
+    async def scalar(self, _query):
+        return 0
 
     async def commit(self):
         return None
@@ -76,6 +83,24 @@ async def test_update_thread_merges_metadata_and_status():
     assert updated.metadata_["model_profile"] == "qwen3-max"
     assert updated.metadata_["published"] is True
     assert updated.metadata_["share_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_thread_persists_requested_metadata():
+    service = RunService()
+    workspace_id = uuid4()
+    session = _SessionStub([])
+
+    created = await service.create_thread(
+        session,
+        workspace_id=workspace_id,
+        title="Model scoped task",
+        metadata={"model_profile": "qwen3-vl-plus"},
+    )
+
+    assert created.workspace_id == workspace_id
+    assert created.metadata_["shared_memory"]["summary"] is None
+    assert created.metadata_["model_profile"] == "qwen3-vl-plus"
 
 
 @pytest.mark.asyncio

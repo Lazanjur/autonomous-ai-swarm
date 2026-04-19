@@ -108,6 +108,7 @@ class ChatThreadCreateRequest(BaseModel):
     workspace_id: UUID
     project_id: UUID | None = None
     title: str | None = None
+    metadata: dict = Field(default_factory=dict)
 
 
 class ChatThreadUpdateRequest(BaseModel):

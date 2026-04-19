@@ -23,6 +23,16 @@ class _RowsResult:
         return self._rows
 
 
+class _RowLike:
+    def __init__(self, value):
+        self._value = value
+
+    def __getitem__(self, index):
+        if index == 0:
+            return self._value
+        raise IndexError(index)
+
+
 class _SessionStub:
     def __init__(self, workspace, step_rows, tool_rows):
         self.workspace = workspace
@@ -82,9 +92,9 @@ async def test_get_agents_surface_builds_catalog_and_activity():
         ),
     ]
     tool_rows = [
-        (SimpleNamespace(run_step_id=coding_step_id, tool_name="workspace_files"),),
-        (SimpleNamespace(run_step_id=coding_step_id, tool_name="python_sandbox"),),
-        (SimpleNamespace(run_step_id=research_step_id, tool_name="web_search"),),
+        _RowLike(SimpleNamespace(run_step_id=coding_step_id, tool_name="workspace_files")),
+        _RowLike(SimpleNamespace(run_step_id=coding_step_id, tool_name="python_sandbox")),
+        _RowLike(SimpleNamespace(run_step_id=research_step_id, tool_name="web_search")),
     ]
     session = _SessionStub(workspace, rows, tool_rows)
 
@@ -101,6 +111,9 @@ async def test_get_agents_surface_builds_catalog_and_activity():
     assert payload["overview"]["escalation_count"] == 1
     assert payload["providers"]
     assert payload["model_catalog"]
+    assert any(model["name"] == "gpt-5.4" for model in payload["model_catalog"])
+    assert any(model["name"] == "claude-sonnet-4" for model in payload["model_catalog"])
+    assert any(model["name"] == "gemini-2.5-pro" for model in payload["model_catalog"])
     assert payload["recent_activity"]
     assert any(agent["key"] == "planner" for agent in payload["agents"])
     assert any(agent["key"] == "ui_diagram" for agent in payload["agents"])

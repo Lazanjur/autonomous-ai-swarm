@@ -453,6 +453,7 @@ export type ChatThreadCreatePayload = {
   workspace_id: string;
   project_id?: string | null;
   title?: string | null;
+  metadata?: Record<string, unknown>;
 };
 
 export type ChatProjectCreatePayload = {

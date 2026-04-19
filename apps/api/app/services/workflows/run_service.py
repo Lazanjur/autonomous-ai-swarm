@@ -48,6 +48,7 @@ TASK_CHECKLIST_START_MARKER = "<!-- SWARM_TASK_CHECKLIST_START -->"
 TASK_CHECKLIST_END_MARKER = "<!-- SWARM_TASK_CHECKLIST_END -->"
 SHARED_MEMORY_LIST_LIMIT = 8
 SHARED_MEMORY_AGENT_LIMIT = 6
+NOTEBOOKLM_MODEL_PROFILE = "notebooklm"
 
 
 class RunService:
@@ -802,7 +803,14 @@ class RunService:
         tool_rows = tool_rows_result.all() if tool_rows_result is not None else []
         tool_calls_by_step: dict[Any, list[ToolCall]] = defaultdict(list)
         for item in tool_rows:
-            tool_call = item[0] if isinstance(item, tuple) else item
+            tool_call = item
+            if not hasattr(tool_call, "run_step_id"):
+                try:
+                    tool_call = item[0]
+                except (TypeError, KeyError, IndexError):
+                    continue
+            if not hasattr(tool_call, "run_step_id"):
+                continue
             tool_calls_by_step[tool_call.run_step_id].append(tool_call)
 
         step_activity: dict[str, dict[str, Any]] = defaultdict(
@@ -1491,6 +1499,7 @@ class RunService:
         workspace_id,
         project_id=None,
         title: str | None = None,
+        metadata: dict[str, Any] | None = None,
         actor_id=None,
     ) -> ChatThread:
         if project_id is not None:
@@ -1505,12 +1514,16 @@ class RunService:
             workspace_id=workspace_id,
             resource_key="threads",
         )
+        requested_metadata = metadata if isinstance(metadata, dict) else {}
         thread = ChatThread(
             workspace_id=workspace_id,
             project_id=project_id,
             title=(title or "New thread").strip()[:255] or "New thread",
             status="active",
-            metadata={"shared_memory": self._empty_shared_memory()},
+            metadata={
+                "shared_memory": self._empty_shared_memory(),
+                **requested_metadata,
+            },
         )
         session.add(thread)
         session.add(
@@ -1709,6 +1722,7 @@ class RunService:
         thread = await self._resolve_thread(session, payload, actor_id=actor_id)
         project = await self._load_thread_project(session, thread)
         run = await self._start_run(session, payload=payload, thread=thread)
+        selected_model_profile = self._selected_model_profile(payload, thread)
         effective_prompt = self._build_effective_prompt(thread, payload.message)
         execution_environment = self._execution_environment_payload(payload)
         autonomy_mode = self._resolve_autonomy_mode(thread, payload)
@@ -1759,6 +1773,8 @@ class RunService:
                     "thread_id": str(thread.id),
                     "project_id": str(project.id) if project else None,
                     "actor_id": str(actor_id) if actor_id else None,
+                    "model_profile": selected_model_profile,
+                    "notebooklm_preferred": selected_model_profile == NOTEBOOKLM_MODEL_PROFILE,
                     "autonomy_mode": autonomy_mode,
                     "execution_environment": execution_environment,
                 },
@@ -1807,6 +1823,7 @@ class RunService:
         thread = await self._resolve_thread(session, payload, actor_id=actor_id)
         project = await self._load_thread_project(session, thread)
         run = await self._start_run(session, payload=payload, thread=thread)
+        selected_model_profile = self._selected_model_profile(payload, thread)
         effective_prompt = self._build_effective_prompt(thread, payload.message)
         queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
         execution_environment = self._execution_environment_payload(payload)
@@ -1947,6 +1964,8 @@ class RunService:
                         "thread_id": str(worker_thread.id),
                         "project_id": str(worker_project.id) if worker_project else None,
                         "actor_id": str(actor_id) if actor_id else None,
+                        "model_profile": selected_model_profile,
+                        "notebooklm_preferred": selected_model_profile == NOTEBOOKLM_MODEL_PROFILE,
                         "autonomy_mode": autonomy_mode,
                         "execution_environment": execution_environment,
                         "composer_context": (
@@ -2222,14 +2241,39 @@ class RunService:
             metadata_value = getattr(thread, "metadata", None)
         metadata = metadata_value if isinstance(metadata_value, dict) else {}
         task_brief = str(metadata.get("task_brief") or "").strip()
+        notebooklm_note = ""
+        if str(metadata.get("model_profile") or "").strip().lower() == NOTEBOOKLM_MODEL_PROFILE:
+            notebooklm_note = (
+                "Preferred generation route for this thread:\n"
+                "NotebookLM-first. Use NotebookLM whenever the request maps to a NotebookLM-native deliverable, "
+                "and only fall back when NotebookLM is not a fit for the task.\n\n"
+            )
         if not task_brief:
-            return message
+            return f"{notebooklm_note}{message}" if notebooklm_note else message
         return (
+            f"{notebooklm_note}"
             "Persistent task brief for this thread:\n"
             f"{task_brief}\n\n"
             "Latest user instruction:\n"
             f"{message}"
         )
+
+    def _selected_model_profile(self, payload: ChatRunRequest, thread: ChatThread) -> str:
+        return str(
+            payload.model_profile
+            or (
+                thread.metadata_.get("model_profile")
+                if isinstance(thread.metadata_, dict)
+                else None
+            )
+            or settings.supervisor_model
+        )
+
+    def _resolve_supervisor_model(self, model_profile: str) -> str:
+        normalized = str(model_profile or "").strip().lower()
+        if normalized == NOTEBOOKLM_MODEL_PROFILE:
+            return settings.supervisor_model
+        return str(model_profile or settings.supervisor_model)
 
     def _browser_fast_path_content(self, prompt: str, tool_result: dict[str, Any]) -> str:
         status = str(tool_result.get("status") or "completed")
@@ -2333,20 +2377,13 @@ class RunService:
                 "selected_template_category": template.get("category") if isinstance(template, dict) else None,
             }
         execution_environment = self._execution_environment_payload(payload)
+        selected_model_profile = self._selected_model_profile(payload, thread)
 
         run = Run(
             thread_id=thread.id,
             workspace_id=payload.workspace_id,
             status="running",
-            supervisor_model=str(
-                payload.model_profile
-                or (
-                    thread.metadata_.get("model_profile")
-                    if isinstance(thread.metadata_, dict)
-                    else None
-                )
-                or settings.supervisor_model
-            ),
+            supervisor_model=self._resolve_supervisor_model(selected_model_profile),
             user_message=payload.message,
         )
         session.add(run)
@@ -2366,6 +2403,8 @@ class RunService:
                         if payload.template_key
                         else {}
                     ),
+                    "model_profile": selected_model_profile,
+                    "notebooklm_preferred": selected_model_profile == NOTEBOOKLM_MODEL_PROFILE,
                     "autonomy_mode": self._resolve_autonomy_mode(thread, payload),
                     **(
                         {

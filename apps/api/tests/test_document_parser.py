@@ -31,3 +31,24 @@ def test_parse_csv_upload():
     assert parsed.source_type == "csv"
     assert parsed.metadata["row_count"] == 2
     assert "name,revenue" in parsed.content_text
+
+
+def test_parse_jsonl_upload():
+    parser = DocumentParserService()
+    payload = b'{"name":"north"}\n{"name":"south"}\n'
+
+    parsed = parser.parse_bytes("records.jsonl", "application/jsonl", payload)
+
+    assert parsed.source_type == "json"
+    assert parsed.metadata["row_count"] == 2
+    assert '"name": "north"' in parsed.content_text
+
+
+def test_parse_binary_attachment_as_placeholder():
+    parser = DocumentParserService()
+
+    parsed = parser.parse_bytes("photo.png", "image/png", b"\x89PNG\r\n\x1a\nbinary")
+
+    assert parsed.source_type == "image"
+    assert parsed.metadata["attachment_only"] is True
+    assert "Attached file: photo.png" in parsed.content_text
